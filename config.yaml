@@ -1,0 +1,8 @@
+wechat:
+  webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxxxxxx"
+server:
+  port: "0.0.0.0:18082"
+  type:
+    - dingding
+    - wecom
+    - feishu
