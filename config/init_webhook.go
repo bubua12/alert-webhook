@@ -13,8 +13,11 @@ import (
 	"time"
 )
 
-var WebhookUrl string
-var WebhookServerPort string
+var (
+	EnabledClients []string
+	Notifiers      map[string]string // client -> webhook_url
+	ServerPort     string
+)
 
 func init() {
 	// 加载配置
@@ -27,66 +30,111 @@ func init() {
 	}
 	fmt.Println("配置初始化成功")
 
-	WebhookUrl = cfg.WeChat.WebhookURL
-	WebhookServerPort = cfg.Server.Port
+	EnabledClients = cfg.Clients
+	ServerPort = cfg.Server.Port
+
+	// 构建通知器映射
+	Notifiers = make(map[string]string)
+	for client, config := range cfg.Notifiers {
+		Notifiers[client] = config.WebhookURL
+	}
 }
 
-// TestWecomConnection 测试企业微信Webhook连通性
-func TestWecomConnection() bool {
+// TestClientsConnection 测试所有启用的客户端连通性
+func TestClientsConnection() bool {
+	allSuccess := true
 
-	msg := map[string]interface{}{
-		"msgtype": "markdown",
-		"markdown": map[string]string{
-			"content": "wecom test message",
-		},
+	for _, client := range EnabledClients {
+		url, ok := Notifiers[client]
+		if !ok {
+			log.Printf("客户端 %s 未配置", client)
+			continue
+		}
+
+		var msg map[string]interface{}
+
+		switch client {
+		case "wechat":
+			msg = map[string]interface{}{
+				"msgtype": "markdown",
+				"markdown": map[string]string{
+					"content": "[测试连接]企业微信",
+				},
+			}
+		case "dingtalk":
+			msg = map[string]interface{}{
+				"msgtype": "markdown",
+				"markdown": map[string]string{
+					"title": "钉钉连通性测试",
+					"text":  "钉钉连通性测试",
+				},
+			}
+		case "feishu":
+			msg = map[string]interface{}{
+				"msg_type": "text",
+				"content": map[string]string{
+					"text": "飞书连通性测试",
+				},
+			}
+		default:
+			log.Printf("未知客户端类型: %s", client)
+			continue
+		}
+
+		if success := sendTestMessage(client, url, msg); success {
+			log.Printf("[Connecttion Test Success] %s 连通性测试成功", client)
+		} else {
+			log.Printf("[Connecttion Test Faield] %s 连通性测试失败", client)
+			allSuccess = false
+		}
 	}
 
+	return allSuccess
+}
+
+// sendTestMessage 发送测试连接消息
+func sendTestMessage(clientType, url string, msg map[string]interface{}) bool {
 	jsonData, err := json.Marshal(msg)
 	if err != nil {
-		log.Println("JSON 编码失败:", err)
+		log.Printf("[%s] JSON 编码失败: %v", clientType, err)
 		return false
 	}
 
-	req, err := http.NewRequest("POST", WebhookUrl, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Println("创建请求失败:", err)
+		log.Printf("[%s] 创建请求失败: %v", clientType, err)
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	// 修复：将变量名改为 httpClient 避免冲突
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Println("发送请求失败:", err)
+		log.Printf("[%s] 发送请求失败: %v", clientType, err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Println("读取响应失败:", err)
+		log.Printf("[%s] 读取响应失败: %v", clientType, err)
 		return false
 	}
 
-	// 企业微信响应成功应包含 {"errcode": 0, "errmsg": "ok"}
-	var result struct {
-		ErrCode int    `json:"errcode"`
-		ErrMsg  string `json:"errmsg"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		log.Println("响应解析失败:", err)
+	// 检查响应状态
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("[%s] 返回错误状态码: %d, 响应: %s", clientType, resp.StatusCode, string(body))
 		return false
 	}
 
-	fmt.Printf("WeCom 响应: %v\n", result)
-
-	return result.ErrCode == 0 && result.ErrMsg == "ok"
+	return true
 }
 
-// StartWebhookServer 使用 Gin 启动 webhook 服务
+// StartWebhookServer 启动webhook服务
 func StartWebhookServer(addr string) {
 	router := gin.New()
-	router.POST("/webhook-alert", service.GinAlertHandler(WebhookUrl))
+	router.POST("/webhook-alert", service.GinAlertHandler(Notifiers, EnabledClients))
 
 	srv := &http.Server{
 		Addr:    addr,
