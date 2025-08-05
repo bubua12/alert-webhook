@@ -41,16 +41,21 @@ go build -o alert-relay main.go
 
 ```yaml
 server:
-  port: 8080
+  port: "0.0.0.0:18082"
 
-wechat:
-  webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+# 消息接收客户端，支持配置数组同时发送，配置客户端需要同时对应的webhook，否则程序会异常
+client:
+  - wechat
+  - dingtalk
 
-dingtalk:
-  webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+notifiers:
+  wechat:
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
+  dingtalk:
+    webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
+  feishu:
+    webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-feishu:
-  webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
 ### 3. Alertmanager 配置
@@ -83,5 +88,3 @@ receivers:
 MIT License
 
 ---
-
-由开源社区贡献和维护，欢迎 PR 与 Star 🌟！
