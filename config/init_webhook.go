@@ -82,9 +82,9 @@ func TestClientsConnection() bool {
 		}
 
 		if success := sendTestMessage(client, url, msg); success {
-			log.Printf("[Connecttion Test Success] %s 连通性测试成功", client)
+			log.Printf("[Connection Test Success] %s 连通性测试成功", client)
 		} else {
-			log.Printf("[Connecttion Test Faield] %s 连通性测试失败", client)
+			log.Printf("[Connection Test Faield] %s 连通性测试失败", client)
 			allSuccess = false
 		}
 	}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"alert-webhook/utils"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"log"
@@ -74,6 +75,8 @@ func formatMessageForClient(client string, data template.Data) (interface{}, err
 
 	switch client {
 	case "wechat":
+		log.Printf("转换企业微信格式")
+		commonContent := utils.AlertFormatWechat(data)
 		return WeChatMessage{
 			MsgType: "markdown",
 			Markdown: MarkdownMessage{
@@ -81,6 +84,7 @@ func formatMessageForClient(client string, data template.Data) (interface{}, err
 			},
 		}, nil
 	case "dingtalk":
+		log.Printf("转换钉钉格式")
 		return DingTalkMessage{
 			MsgType: "markdown",
 			Markdown: DingTalkMarkdown{
@@ -89,6 +93,7 @@ func formatMessageForClient(client string, data template.Data) (interface{}, err
 			},
 		}, nil
 	case "feishu":
+		log.Printf("转换飞书格式")
 		return FeishuMessage{
 			MsgType: "text",
 			Content: FeishuContent{

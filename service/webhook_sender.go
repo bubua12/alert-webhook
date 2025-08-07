@@ -9,7 +9,7 @@ import (
 	"net/http"
 )
 
-// 企业微信消息结构
+// WeChatMessage 企业微信消息结构
 type WeChatMessage struct {
 	MsgType  string          `json:"msgtype"`
 	Markdown MarkdownMessage `json:"markdown"`
