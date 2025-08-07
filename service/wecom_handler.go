@@ -25,7 +25,16 @@ func GinAlertHandler(notifiers map[string]string, enabledClients []string) gin.H
 			return
 		}
 
-		// 并发发送到所有客户端
+		// 过滤无效告警
+		validAlerts := utils.FilterValidAlerts(data.Alerts)
+		if len(validAlerts) == 0 {
+			log.Println("所有告警的 severity 都为 none，忽略发送")
+			c.String(http.StatusOK, "无有效告警，无需发送")
+			return
+		}
+		// 替换原始 data
+		data.Alerts = validAlerts
+
 		var wg sync.WaitGroup
 		failedClients := make([]string, 0)
 
@@ -69,18 +78,14 @@ func GinAlertHandler(notifiers map[string]string, enabledClients []string) gin.H
 	}
 }
 
-// formatMessageForClient 根据客户端类型格式化消息
 func formatMessageForClient(client string, data template.Data) (interface{}, error) {
-	commonContent := formatToCommonMarkdown(data)
-
 	switch client {
 	case "wechat":
 		log.Printf("转换企业微信格式")
-		commonContent := utils.AlertFormatWechat(data)
 		return WeChatMessage{
 			MsgType: "markdown",
 			Markdown: MarkdownMessage{
-				Content: commonContent,
+				Content: utils.AlertFormatWechat(data),
 			},
 		}, nil
 	case "dingtalk":
@@ -89,7 +94,7 @@ func formatMessageForClient(client string, data template.Data) (interface{}, err
 			MsgType: "markdown",
 			Markdown: DingTalkMarkdown{
 				Title: "Prometheus告警",
-				Text:  commonContent,
+				Text:  utils.AlertFormatDingtalk(data),
 			},
 		}, nil
 	case "feishu":
@@ -97,39 +102,10 @@ func formatMessageForClient(client string, data template.Data) (interface{}, err
 		return FeishuMessage{
 			MsgType: "text",
 			Content: FeishuContent{
-				Text: commonContent,
+				Text: utils.AlertFormatFeishu(data),
 			},
 		}, nil
 	default:
 		return nil, fmt.Errorf("未知客户端类型: %s", client)
 	}
-}
-
-// 生成通用的markdown格式
-func formatToCommonMarkdown(data template.Data) string {
-	var msg string
-
-	if data.Status == "firing" {
-		msg += "# 🚨 Prometheus告警通知\n"
-		msg += "**状态**: FIRING\n"
-		for _, alert := range data.Alerts {
-			msg += "\n---\n"
-			msg += fmt.Sprintf("**告警名称**: %s\n", alert.Labels["alertname"])
-			msg += fmt.Sprintf("**级别**: %s\n", alert.Labels["severity"])
-			msg += fmt.Sprintf("**实例**: %s\n", alert.Labels["instance"])
-			msg += fmt.Sprintf("**摘要**: %s\n", alert.Annotations["summary"])
-			msg += fmt.Sprintf("**描述**: %s\n", alert.Annotations["description"])
-			msg += fmt.Sprintf("**触发时间**: %s\n", alert.StartsAt.Format("2006-01-02 15:04:05"))
-		}
-	} else if data.Status == "resolved" {
-		msg += "# ✅ Prometheus告警恢复通知\n"
-		msg += "**状态**: RESOLVED\n"
-		for _, alert := range data.Alerts {
-			msg += "\n---\n"
-			msg += fmt.Sprintf("**告警名称**: %s\n", alert.Labels["alertname"])
-			msg += fmt.Sprintf("**恢复时间**: %s\n", alert.EndsAt.Format("2006-01-02 15:04:05"))
-		}
-	}
-
-	return msg
 }

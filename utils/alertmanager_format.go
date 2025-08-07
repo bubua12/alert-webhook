@@ -3,22 +3,99 @@ package utils
 import (
 	"fmt"
 	"github.com/prometheus/alertmanager/template"
+	"strings"
 )
 
-// AlertFormatWechat 企业微信格式转换
+func AlertFormatFeishu(data template.Data) string {
+	var builder strings.Builder
+	alertCount := len(data.Alerts)
+
+	if data.Status == "firing" {
+		builder.WriteString("**🔥 Prometheus告警通知**\n")
+		builder.WriteString("请关注告警信息，相关人员请注意\n")
+		builder.WriteString("> **状态:** 告警中\n")
+		for i, alert := range data.Alerts {
+			if alertCount > 1 && i > 0 {
+				builder.WriteString("> ---\n")
+			}
+			severity := alert.Labels["severity"]
+			builder.WriteString(fmt.Sprintf("> **告警名称:** %s\n", alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("> **级别:** %s\n", MapSeverity(severity)))
+			builder.WriteString(fmt.Sprintf("> **实例:** %s\n", alert.Labels["instance"]))
+			builder.WriteString(fmt.Sprintf("> **摘要:** %s\n", alert.Annotations["summary"]))
+			builder.WriteString(fmt.Sprintf("> **描述:** %s\n", alert.Annotations["description"]))
+			builder.WriteString(fmt.Sprintf("> **触发时间:** %s\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
+		}
+	} else if data.Status == "resolved" {
+		builder.WriteString("**✅ Prometheus告警恢复**\n")
+		builder.WriteString("> **状态:** 已恢复\n")
+		for i, alert := range data.Alerts {
+			if alertCount > 1 && i > 0 {
+				builder.WriteString("> ---\n")
+			}
+			builder.WriteString(fmt.Sprintf("> **告警名称:** %s\n", alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("> **恢复时间:** %s\n", alert.EndsAt.Format("2006-01-02 15:04:05")))
+		}
+	}
+	return builder.String()
+}
+
+func AlertFormatDingtalk(data template.Data) string {
+	var builder strings.Builder
+	alertCount := len(data.Alerts)
+
+	if data.Status == "firing" {
+		builder.WriteString("### 🔥 Prometheus告警通知\n\n")
+		builder.WriteString(fmt.Sprintf("#### 请关注告警信息 \n\n"))
+		builder.WriteString(fmt.Sprintf("**状态: 告警中**\n\n"))
+
+		for i, alert := range data.Alerts {
+			if alertCount > 1 && i > 0 {
+				builder.WriteString("> ---\n")
+			}
+
+			builder.WriteString(fmt.Sprintf("**告警名称**: %s\n\n", alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("**告警级别**: %s\n\n", MapSeverity(alert.Labels["severity"])))
+			builder.WriteString(fmt.Sprintf("**监控实例**: %s\n\n", alert.Labels["instance"]))
+			builder.WriteString(fmt.Sprintf("**告警摘要**: %s\n\n", alert.Annotations["summary"]))
+			builder.WriteString(fmt.Sprintf("**触发时间**: %s\n\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
+
+			if desc, ok := alert.Annotations["description"]; ok && desc != "" {
+				builder.WriteString(fmt.Sprintf("**详细描述**: %s\n\n", desc))
+			}
+		}
+	} else if data.Status == "resolved" {
+		builder.WriteString("### ✅ Prometheus告警恢复\n\n")
+		builder.WriteString(fmt.Sprintf("状态: **已恢复**\n\n"))
+
+		for i, alert := range data.Alerts {
+			if alertCount > 1 && i > 0 {
+				builder.WriteString("> ---\n")
+			}
+
+			builder.WriteString(fmt.Sprintf("**告警名称**: %s\n", alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("**恢复时间**: %s\n\n", alert.EndsAt.Format("2006-01-02 15:04:05")))
+		}
+	}
+
+	return builder.String()
+}
+
 func AlertFormatWechat(data template.Data) string {
 	var msg string
 	alertCount := len(data.Alerts)
 
 	if data.Status == "firing" {
-		msg += "**🔥 <font color=\"red\">Prometheus告警通知</font>**\n"
+		msg += "**🔥 <font size=18 color=\"red\">Prometheus 告警通知</font>**\n"
 		msg += "请关注告警信息，相关人员请注意\n"
-		msg += ">**状态: <font color=\"red\">告警中</font>**\n"
+		//msg += ">**状态: <font color=\"red\">告警中</font>**\n"
+
 		for i, alert := range data.Alerts {
 			if alertCount > 1 && i > 0 {
 				msg += ">---\n"
 			}
-			msg += fmt.Sprintf(">**告警名称: <font color=\"red\">%s</font>**\n", alert.Labels["alertname"])
+			msg += fmt.Sprintf(">**状态: <font color=\"%s\">告警中</font>**\n", MapSeverityColor(alert.Labels["severity"]))
+			msg += fmt.Sprintf(">**告警名称: <font color=\"%s\">%s</font>**\n", MapSeverityColor(alert.Labels["severity"]), alert.Labels["alertname"])
 			msg += fmt.Sprintf(">**级别: <font color=\"%s\">%s</font>**\n", MapSeverityColor(alert.Labels["severity"]), MapSeverity(alert.Labels["severity"]))
 			msg += fmt.Sprintf(">**实例**: <font color=\"black\">%s</font>\n", alert.Labels["instance"])
 			msg += fmt.Sprintf(">**摘要**: <font color=\"black\">%s</font>\n", alert.Annotations["summary"])
@@ -26,7 +103,7 @@ func AlertFormatWechat(data template.Data) string {
 			msg += fmt.Sprintf(">**触发时间**: <font color=\"black\">%s</font>\n", alert.StartsAt.Format("2006-01-02 15:04:05"))
 		}
 	} else if data.Status == "resolved" {
-		msg += "**✅ <font color=\"green\">Prometheus告警恢复</font>**\n"
+		msg += "**✅ <font size=18 color=\"green\">Prometheus 告警恢复</font>**\n"
 		msg += ">状态: <font color=\"green\">已恢复</font>\n"
 		for i, alert := range data.Alerts {
 			if alertCount > 1 && i > 0 {
@@ -63,7 +140,7 @@ func MapSeverity(severity string) string {
 func MapSeverityColor(severity string) string {
 	switch severity {
 	case "emergency":
-		return "re"
+		return "red"
 	case "critical":
 		return "red"
 	case "warning":
@@ -73,4 +150,14 @@ func MapSeverityColor(severity string) string {
 	default:
 		return "black"
 	}
+}
+
+func FilterValidAlerts(alerts []template.Alert) []template.Alert {
+	valid := make([]template.Alert, 0)
+	for _, alert := range alerts {
+		if alert.Labels["severity"] != "none" {
+			valid = append(valid, alert)
+		}
+	}
+	return valid
 }

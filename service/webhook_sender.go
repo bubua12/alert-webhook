@@ -47,6 +47,8 @@ func SendAlert(client, webhookURL string, message interface{}) error {
 		return fmt.Errorf("[%s] JSON编码失败: %w", client, err)
 	}
 
+	fmt.Println("JSON消息格式: \n", string(jsonData))
+
 	resp, err := http.Post(webhookURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("[%s] HTTP请求失败: %w", client, err)
