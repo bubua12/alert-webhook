@@ -56,7 +56,7 @@ func AlertFormatDingtalk(data template.Data) string {
 			builder.WriteString(fmt.Sprintf("**状态: <font color=\"%s\">告警中</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"])))
 			builder.WriteString(fmt.Sprintf("**告警名称: <font color=\"%s\">%s</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"]), alert.Labels["alertname"]))
 			builder.WriteString(fmt.Sprintf("**告警级别: <font color=\"%s\">%s</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"]), MapSeverity(alert.Labels["severity"])))
-			builder.WriteString(fmt.Sprintf("**监控实例:** <font color=\"black\">%s</font>\n\n", alert.Labels["instance"]))
+			builder.WriteString(fmt.Sprintf("**监控实例:** %s\n\n", alert.Labels["instance"]))
 			builder.WriteString(fmt.Sprintf("**告警摘要:** %s\n\n", alert.Annotations["summary"]))
 			builder.WriteString(fmt.Sprintf("**触发时间:** %s\n\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
 
