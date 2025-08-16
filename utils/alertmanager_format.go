@@ -47,22 +47,22 @@ func AlertFormatDingtalk(data template.Data) string {
 
 	if data.Status == "firing" {
 		builder.WriteString("### 🔥 Prometheus告警通知\n\n")
-		builder.WriteString(fmt.Sprintf("#### 请关注告警信息 \n\n"))
-		builder.WriteString(fmt.Sprintf("**状态: 告警中**\n\n"))
+		builder.WriteString(fmt.Sprintf(">请关注告警信息\n\n"))
 
 		for i, alert := range data.Alerts {
 			if alertCount > 1 && i > 0 {
 				builder.WriteString("> ---\n")
 			}
 
-			builder.WriteString(fmt.Sprintf("**告警名称**: %s\n\n", alert.Labels["alertname"]))
-			builder.WriteString(fmt.Sprintf("**告警级别**: %s\n\n", MapSeverity(alert.Labels["severity"])))
-			builder.WriteString(fmt.Sprintf("**监控实例**: %s\n\n", alert.Labels["instance"]))
-			builder.WriteString(fmt.Sprintf("**告警摘要**: %s\n\n", alert.Annotations["summary"]))
-			builder.WriteString(fmt.Sprintf("**触发时间**: %s\n\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
+			builder.WriteString(fmt.Sprintf("**状态: <font color=\"%s\">告警中</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"])))
+			builder.WriteString(fmt.Sprintf("**告警名称: <font color=\"%s\">%s</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"]), alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("**告警级别: <font color=\"%s\">%s</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"]), MapSeverity(alert.Labels["severity"])))
+			builder.WriteString(fmt.Sprintf("**监控实例:** %s\n\n", alert.Labels["instance"]))
+			builder.WriteString(fmt.Sprintf("**告警摘要:** %s\n\n", alert.Annotations["summary"]))
+			builder.WriteString(fmt.Sprintf("**触发时间:** %s\n\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
 
 			if desc, ok := alert.Annotations["description"]; ok && desc != "" {
-				builder.WriteString(fmt.Sprintf("**详细描述**: %s\n\n", desc))
+				builder.WriteString(fmt.Sprintf("**详细描述:** %s\n\n", desc))
 			}
 		}
 	} else if data.Status == "resolved" {
@@ -146,6 +146,21 @@ func MapSeverityColor(severity string) string {
 		return "red"
 	case "warning":
 		return "warning"
+	case "info":
+		return "comment"
+	default:
+		return "black"
+	}
+}
+
+func DingTalkMapSeverityColor(severity string) string {
+	switch severity {
+	case "emergency":
+		return "#FF0000"
+	case "critical":
+		return "#FF7F0E"
+	case "warning":
+		return "#FFD700"
 	case "info":
 		return "comment"
 	default:

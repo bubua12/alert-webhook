@@ -5,6 +5,7 @@ server:
 client:
   - wechat
   - dingtalk
+  - feishu
 
 notifiers:
   wechat:
