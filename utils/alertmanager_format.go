@@ -2,8 +2,9 @@ package utils
 
 import (
 	"fmt"
-	"github.com/prometheus/alertmanager/template"
 	"strings"
+
+	"github.com/prometheus/alertmanager/template"
 )
 
 func AlertFormatFeishu(data template.Data) string {
@@ -104,7 +105,7 @@ func AlertFormatWechat(data template.Data) string {
 		}
 	} else if data.Status == "resolved" {
 		msg += "**✅ <font size=18 color=\"green\">Prometheus 告警恢复</font>**\n"
-		msg += ">状态: <font color=\"green\">已恢复</font>\n"
+		msg += ">**状态: <font color=\"green\">已恢复</font>**\n"
 		for i, alert := range data.Alerts {
 			if alertCount > 1 && i > 0 {
 				msg += ">---\n"
@@ -112,8 +113,8 @@ func AlertFormatWechat(data template.Data) string {
 			severity := alert.Labels["severity"]
 			color := MapSeverityColor(severity)
 
-			msg += fmt.Sprintf(">告警名称: <font color=\"%s\">%s</font>\n", color, alert.Labels["alertname"])
-			msg += fmt.Sprintf(">恢复时间: <font color=\"comment\">%s</font>\n", alert.EndsAt.Format("2006-01-02 15:04:05"))
+			msg += fmt.Sprintf(">**告警名称: <font color=\"%s\">%s</font>**\n", color, alert.Labels["alertname"])
+			msg += fmt.Sprintf(">**恢复时间: <font color=\"comment\">%s</font>**\n", alert.EndsAt.Format("2006-01-02 15:04:05"))
 		}
 	}
 

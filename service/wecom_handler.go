@@ -3,10 +3,11 @@ package service
 import (
 	"alert-webhook/utils"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"log"
 	"net/http"
 	"sync"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/prometheus/alertmanager/template"
 )

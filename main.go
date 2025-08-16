@@ -3,8 +3,9 @@ package main
 import (
 	"alert-webhook/config"
 	"alert-webhook/console"
-	"github.com/natefinch/lumberjack"
 	"log"
+
+	"github.com/natefinch/lumberjack"
 )
 
 func main() {
