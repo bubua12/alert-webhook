@@ -29,6 +29,7 @@
 ```bash
 # 编译(这里以编译到 Linux操作系统)
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o kube-alert
+```
 
 # 运行（默认读取 ./config.yaml）
 使用scripts目录下的 start.sh 脚本启动
