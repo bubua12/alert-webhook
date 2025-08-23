@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/prometheus/alertmanager/template"
 )
@@ -44,6 +45,7 @@ func AlertFormatFeishu(data template.Data) string {
 func AlertFormatDingtalk(data template.Data) string {
 	var builder strings.Builder
 	alertCount := len(data.Alerts)
+	loc, _ := time.LoadLocation("Asia/Shanghai")
 
 	if data.Status == "firing" {
 		builder.WriteString("### 🔥 Prometheus告警通知\n\n")
@@ -59,7 +61,7 @@ func AlertFormatDingtalk(data template.Data) string {
 			builder.WriteString(fmt.Sprintf("**告警级别: <font color=\"%s\">%s</font>**\n\n", DingTalkMapSeverityColor(alert.Labels["severity"]), MapSeverity(alert.Labels["severity"])))
 			builder.WriteString(fmt.Sprintf("**监控实例:** %s\n\n", alert.Labels["instance"]))
 			builder.WriteString(fmt.Sprintf("**告警摘要:** %s\n\n", alert.Annotations["summary"]))
-			builder.WriteString(fmt.Sprintf("**触发时间:** %s\n\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
+			builder.WriteString(fmt.Sprintf("**触发时间:** %s\n\n", alert.StartsAt.In(loc).Format("2006-01-02 15:04:05")))
 
 			if desc, ok := alert.Annotations["description"]; ok && desc != "" {
 				builder.WriteString(fmt.Sprintf("**详细描述:** %s\n\n", desc))
@@ -75,7 +77,7 @@ func AlertFormatDingtalk(data template.Data) string {
 			}
 
 			builder.WriteString(fmt.Sprintf("**告警名称**: %s\n", alert.Labels["alertname"]))
-			builder.WriteString(fmt.Sprintf("**恢复时间**: %s\n\n", alert.EndsAt.Format("2006-01-02 15:04:05")))
+			builder.WriteString(fmt.Sprintf("**恢复时间**: %s\n\n", alert.EndsAt.In(loc).Format("2006-01-02 15:04:05")))
 		}
 	}
 
@@ -85,6 +87,7 @@ func AlertFormatDingtalk(data template.Data) string {
 func AlertFormatWechat(data template.Data) string {
 	var msg string
 	alertCount := len(data.Alerts)
+	loc, _ := time.LoadLocation("Asia/Shanghai")
 
 	if data.Status == "firing" {
 		msg += "**🔥 <font size=18 color=\"red\">Prometheus 告警通知</font>**\n"
@@ -101,7 +104,7 @@ func AlertFormatWechat(data template.Data) string {
 			msg += fmt.Sprintf(">**实例**: <font color=\"black\">%s</font>\n", alert.Labels["instance"])
 			msg += fmt.Sprintf(">**摘要**: <font color=\"black\">%s</font>\n", alert.Annotations["summary"])
 			msg += fmt.Sprintf(">**描述**: <font color=\"black\">%s</font>\n", alert.Annotations["description"])
-			msg += fmt.Sprintf(">**触发时间**: <font color=\"black\">%s</font>\n", alert.StartsAt.Format("2006-01-02 15:04:05"))
+			msg += fmt.Sprintf(">**触发时间**: <font color=\"black\">%s</font>\n", alert.StartsAt.In(loc).Format("2006-01-02 15:04:05"))
 		}
 	} else if data.Status == "resolved" {
 		msg += "**✅ <font size=18 color=\"green\">Prometheus 告警恢复</font>**\n"
@@ -113,8 +116,8 @@ func AlertFormatWechat(data template.Data) string {
 			severity := alert.Labels["severity"]
 			color := MapSeverityColor(severity)
 
-			msg += fmt.Sprintf(">**告警名称: <font color=\"%s\">%s</font>**\n", color, alert.Labels["alertname"])
-			msg += fmt.Sprintf(">**恢复时间: <font color=\"comment\">%s</font>**\n", alert.EndsAt.Format("2006-01-02 15:04:05"))
+			msg += fmt.Sprintf(">**告警名称**: <font color=\"%s\">%s</font>\n", color, alert.Labels["alertname"])
+			msg += fmt.Sprintf(">**恢复时间**: <font color=\"black\">%s</font>\n", alert.EndsAt.In(loc).Format("2006-01-02 15:04:05"))
 		}
 	}
 
