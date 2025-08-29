@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,30 @@ func init() {
 	// 加载配置
 	configPath := flag.String("config", "./config.yaml", "配置文件路径")
 	flag.Parse()
+
+	// 如果配置文件不存在，就写入默认配置
+	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
+		defaultConfig := `server:
+  port: "0.0.0.0:18082"
+
+# 消息接收客户端，支持配置数组同时发送
+client:
+  - wechat
+
+notifiers:
+  wechat:
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
+  dingtalk:
+    webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
+  feishu:
+    webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+`
+		err = os.WriteFile(*configPath, []byte(defaultConfig), 0644)
+		if err != nil {
+			log.Fatalf("无法创建默认配置文件: %v", err)
+		}
+		fmt.Printf("未找到配置文件，已生成默认配置文件: %s\n", *configPath)
+	}
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
