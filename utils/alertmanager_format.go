@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -96,7 +97,7 @@ func AlertFormatWechat(data template.Data) string {
 
 		for i, alert := range data.Alerts {
 			if alertCount > 1 && i > 0 {
-				msg += ">---\n"
+				msg += "\n"
 			}
 			msg += fmt.Sprintf(">**状态: <font color=\"%s\">告警中</font>**\n", MapSeverityColor(alert.Labels["severity"]))
 			msg += fmt.Sprintf(">**告警名称: <font color=\"%s\">%s</font>**\n", MapSeverityColor(alert.Labels["severity"]), alert.Labels["alertname"])
@@ -179,4 +180,76 @@ func FilterValidAlerts(alerts []template.Alert) []template.Alert {
 		}
 	}
 	return valid
+}
+
+// SplitWeChatAlerts 将告警按批次分组，确保每批消息不超过企业微信长度限制
+// 返回多个 template.Data，每个包含一部分告警
+func SplitWeChatAlerts(data template.Data) []template.Data {
+	const maxLength = 4000 // 企业微信限制4096字节，留一些安全边界
+
+	var result []template.Data
+
+	// 如果没有告警，直接返回原数据
+	if len(data.Alerts) == 0 {
+		return []template.Data{data}
+	}
+
+	// 先检查单个告警是否会超长
+	singleAlert := template.Data{
+		Status: data.Status,
+		Alerts: []template.Alert{data.Alerts[0]},
+	}
+	singleMsg := AlertFormatWechat(singleAlert)
+
+	// 如果单个告警就超长，那只能发送单个告警
+	if len(singleMsg) > maxLength {
+		log.Printf("[警告] 单个告警消息长度 %d 字节，超过微信限制，将尝试发送", len(singleMsg))
+		// 对于超长的单个告警，我们还是尝试发送，让微信返回错误
+		for _, alert := range data.Alerts {
+			singleData := template.Data{
+				Status: data.Status,
+				Alerts: []template.Alert{alert},
+			}
+			result = append(result, singleData)
+		}
+		return result
+	}
+
+	// 动态分组告警
+	currentBatch := template.Data{
+		Status: data.Status,
+		Alerts: []template.Alert{},
+	}
+
+	for _, alert := range data.Alerts {
+		// 尝试添加当前告警到批次中
+		testBatch := template.Data{
+			Status: data.Status,
+			Alerts: append(currentBatch.Alerts, alert),
+		}
+
+		testMsg := AlertFormatWechat(testBatch)
+
+		// 如果添加后超长，先保存当前批次，然后开始新批次
+		if len(testMsg) > maxLength {
+			if len(currentBatch.Alerts) > 0 {
+				result = append(result, currentBatch)
+			}
+			// 开始新批次
+			currentBatch = template.Data{
+				Status: data.Status,
+				Alerts: []template.Alert{alert},
+			}
+		} else {
+			// 可以添加到当前批次
+			currentBatch.Alerts = append(currentBatch.Alerts, alert)
+		}
+	}
+
+	// 添加最后一个批次
+	if len(currentBatch.Alerts) > 0 {
+		result = append(result, currentBatch)
+	}
+
+	return result
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -50,7 +51,45 @@ func GinAlertHandler(notifiers map[string]string, enabledClients []string) gin.H
 			go func(client, url string) {
 				defer wg.Done()
 
-				// 根据客户端类型格式化消息
+				// 企业微信需要特殊处理消息长度限制
+				if client == "wechat" {
+					// 将告警分批处理
+					alertBatches := utils.SplitWeChatAlerts(data)
+					log.Printf("[%s] 告警分为 %d 批发送", client, len(alertBatches))
+
+					batchSuccess := 0
+					for i, batchData := range alertBatches {
+						// 格式化当前批次的消息
+						message := WeChatMessage{
+							MsgType: "markdown",
+							Markdown: MarkdownMessage{
+								Content: utils.AlertFormatWechat(batchData),
+							},
+						}
+
+						log.Printf("[%s] 发送第 %d/%d 批消息，包含 %d 个告警", client, i+1, len(alertBatches), len(batchData.Alerts))
+
+						if err := SendAlert(client, url, message); err != nil {
+							log.Printf("[%s] 第 %d 批消息发送失败: %v", client, i+1, err)
+						} else {
+							log.Printf("[%s] 第 %d 批消息发送成功", client, i+1)
+							batchSuccess++
+						}
+
+						// 批次之间添加小延迟，避免频率限制
+						if i < len(alertBatches)-1 {
+							time.Sleep(200 * time.Millisecond)
+						}
+					}
+
+					// 检查是否所有批次都成功
+					if batchSuccess != len(alertBatches) {
+						failedClients = append(failedClients, fmt.Sprintf("%s(%d/%d批成功)", client, batchSuccess, len(alertBatches)))
+					}
+					return
+				}
+
+				// 其他客户端使用原有逻辑
 				message, err := formatMessageForClient(client, data)
 				if err != nil {
 					log.Printf("[%s] 格式化消息失败: %v", client, err)
