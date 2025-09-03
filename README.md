@@ -7,7 +7,7 @@
 
 本项目是一个用于对接 Prometheus Alertmanager 的 Webhook 转发程序，基于 Gin 和 Go 编写，支持将告警信息转化为富格式 markdown 消息并推送到：
 
-- ✅ 企业微信（WeCom）
+- ✅ 企微（WeCom）
 - ✅ 钉钉（DingTalk）
 - ✅ 飞书（Feishu）
 
@@ -72,7 +72,7 @@ receivers:
 
 > Markdown 格式美化后的消息（支持平台不同展示可能略有差异）
 
-- 🔴 **告警中 (FIRING)**：显示红色图标 + 详细告警内容 + 时间戳
+- 🔥 **告警中 (FIRING)**：显示红色图标 + 详细告警内容 + 时间戳
 - ✅ **已恢复 (RESOLVED)**：显示绿色图标，仅展示标题和恢复时间
 
 ## 🧰 开发与调试
