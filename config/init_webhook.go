@@ -1,7 +1,6 @@
 package config
 
 import (
-	"alert-webhook/service"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -11,14 +10,13 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 var (
 	EnabledClients []string
 	Notifiers      map[string]string // client -> webhook_url
 	ServerPort     string
+	GlobalConfig   *AppConfig // 全局配置引用
 )
 
 func init() {
@@ -56,6 +54,8 @@ notifiers:
 	}
 	fmt.Println("配置初始化成功")
 
+	// 保存全局配置引用
+	GlobalConfig = cfg
 	EnabledClients = cfg.Clients
 	ServerPort = cfg.Server.Port
 
@@ -158,17 +158,4 @@ func sendTestMessage(clientType, url string, msg map[string]interface{}) bool {
 }
 
 // StartWebhookServer 启动webhook服务
-func StartWebhookServer(addr string) {
-	router := gin.New()
-	router.POST("/webhook-alert", service.GinAlertHandler(Notifiers, EnabledClients))
-
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: router,
-	}
-
-	log.Printf("Webhook Gin 服务启动于 %s\n", addr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Webhook Gin 服务启动失败: %v", err)
-	}
-}
+// 此函数已移动到 main.go 中以避免循环引用

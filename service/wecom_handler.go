@@ -1,6 +1,7 @@
 package service
 
 import (
+	"alert-webhook/config"
 	"alert-webhook/utils"
 	"fmt"
 	"log"
@@ -13,7 +14,8 @@ import (
 	"github.com/prometheus/alertmanager/template"
 )
 
-func GinAlertHandler(notifiers map[string]string, enabledClients []string) gin.HandlerFunc {
+// GinAlertHandler 处理告警
+func GinAlertHandler(notifiers map[string]string, enabledClients []string, appConfig *config.AppConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost {
 			c.String(http.StatusMethodNotAllowed, "仅支持POST请求")
@@ -34,8 +36,30 @@ func GinAlertHandler(notifiers map[string]string, enabledClients []string) gin.H
 			c.String(http.StatusOK, "无有效告警，无需发送")
 			return
 		}
-		// 替换原始 data
-		data.Alerts = validAlerts
+
+		// 应用配置的过滤规则
+		filteredAlerts := make([]template.Alert, 0)
+		for _, alert := range validAlerts {
+			alertName := alert.Labels["alertname"]
+			severity := alert.Labels["severity"]
+
+			if appConfig.ShouldSendAlert(alertName, severity) {
+				filteredAlerts = append(filteredAlerts, alert)
+				log.Printf("告警 [%s] 级别 [%s] 通过过滤规则", alertName, severity)
+			} else {
+				log.Printf("告警 [%s] 级别 [%s] 被过滤规则拦截", alertName, severity)
+			}
+		}
+
+		if len(filteredAlerts) == 0 {
+			log.Println("所有告警都被过滤规则拦截，忽略发送")
+			c.String(http.StatusOK, "所有告警都被过滤，无需发送")
+			return
+		}
+
+		// 替换为过滤后的告警
+		data.Alerts = filteredAlerts
+		log.Printf("过滤后剩余 %d 个告警将被发送", len(filteredAlerts))
 
 		var wg sync.WaitGroup
 		failedClients := make([]string, 0)
