@@ -52,8 +52,8 @@ type TrafficStats struct {
 	TotalCount         uint64  `ch:"total_count"`
 	AvgRequestSize     float64 `ch:"avg_request_size"`
 	AvgResponseSize    float64 `ch:"avg_response_size"`
-	MaxRequestSize     uint64  `ch:"max_request_size"`
-	MaxResponseSize    uint64  `ch:"max_response_size"`
+	MaxRequestSize     int32   `ch:"max_request_size"`
+	MaxResponseSize    int32   `ch:"max_response_size"`
 	LargeRequestCount  uint64  `ch:"large_request_count"`
 	LargeResponseCount uint64  `ch:"large_response_count"`
 	Domain             string  `ch:"domain"`
@@ -120,7 +120,7 @@ func (c *ClickHouseService) CheckTrafficAnomalies() ([]TrafficStats, error) {
 	responseThreshold := c.config.TrafficAlert.ResponseSizeThreshold
 	countThreshold := c.config.TrafficAlert.CountThreshold
 
-	// 构建查询SQL
+	// 检测SQL查询逻辑
 	query := `
 		SELECT 
 			domain,
