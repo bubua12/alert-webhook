@@ -16,6 +16,31 @@ type AlertFilter struct {
 	Severity SeverityFilter `yaml:"severity"`
 }
 
+// ClickHouseConfig ClickHouse数据库配置
+type ClickHouseConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Database string `yaml:"database"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
+// TrafficAlertConfig 大流量告警配置
+type TrafficAlertConfig struct {
+	// 是否启用大流量告警
+	Enabled bool `yaml:"enabled"`
+	// 检查间隔（秒）
+	CheckInterval int `yaml:"check_interval"`
+	// 请求大小阈值（字节）
+	RequestSizeThreshold int64 `yaml:"request_size_threshold"`
+	// 响应大小阈值（字节）
+	ResponseSizeThreshold int64 `yaml:"response_size_threshold"`
+	// 时间窗口（分钟）
+	TimeWindow int `yaml:"time_window"`
+	// 触发告警的请求数量阈值
+	CountThreshold int `yaml:"count_threshold"`
+}
+
 // AlertNameFilter 告警名称过滤规则
 type AlertNameFilter struct {
 	// 包含规则：只有在此列表中的告警名称才会被转发
@@ -41,11 +66,15 @@ type ServerConfig struct {
 }
 
 type AppConfig struct {
-	Clients   []string                  `yaml:"client"`
-	Notifiers map[string]NotifierConfig `yaml:"notifiers"`
-	Server    ServerConfig              `yaml:"server"`
+	Clients      []string                  `yaml:"client"`
+	Notifiers    map[string]NotifierConfig `yaml:"notifiers"`
+	Server       ServerConfig              `yaml:"server"`
 	// 告警过滤规则
-	Filter AlertFilter `yaml:"filter"`
+	Filter       AlertFilter               `yaml:"filter"`
+	// ClickHouse配置
+	ClickHouse   ClickHouseConfig          `yaml:"clickhouse"`
+	// 大流量告警配置
+	TrafficAlert TrafficAlertConfig        `yaml:"traffic_alert"`
 }
 
 // LoadConfig 根据传入配置文件的路径 --- 加载配置

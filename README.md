@@ -15,10 +15,17 @@
 - 🚀 **企业微信（WeCom）** - 支持 Markdown 格式 + 消息自动分批
 - 📱 **钉钉（DingTalk）** - 支持富文本消息和颜色标识  
 - 💬 **飞书（Feishu）** - 支持文本消息推送
+- 📊 **大流量告警** - 基于 ClickHouse 实时监控 Nginx 访问日志，智能检测异常大流量并自动告警
 
-> 🎯 **核心价值**：统一告警通知中心，解决告警信息分散、格式不统一的问题
+> 🎯 **核心价值**：统一告警通知中心，解决告警信息分散、格式不统一的问题，并提供智能的流量异常监控
 
 ## 🌟 核心特性
+
+### 📊 智能流量监控
+- **ClickHouse 集成**：直接查询 Nginx 访问日志，实时监控流量异常
+- **智能阈值**：支持自定义请求/响应大小阈值和计数阈值
+- **精准告警**：按域名和路径分组监控，提供详细的异常数据
+- **定时检查**：支持配置检查间隔和时间窗口
 
 ### 📢 多平台智能推送
 - **三大平台支持**：企业微信、钉钉、飞书同时推送
@@ -87,6 +94,29 @@ notifiers:
   feishu:
     webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
+# ClickHouse数据库配置（大流量告警功能需要）
+clickhouse:
+  host: "localhost"
+  port: 9000
+  database: "nginxlogs"
+  username: "default"
+  password: ""
+
+# 大流量告警配置
+traffic_alert:
+  # 是否启用大流量告警
+  enabled: true
+  # 检查间隔（秒）
+  check_interval: 300
+  # 请求大小阈值（字节），超过此值视为大请求
+  request_size_threshold: 1048576   # 1MB
+  # 响应大小阈值（字节），超过此值视为大响应  
+  response_size_threshold: 5242880  # 5MB
+  # 时间窗口（分钟），检查此时间段内的流量
+  time_window: 10
+  # 触发告警的大请求/响应数量阈值
+  count_threshold: 5
+
 # 告警过滤规则（可选）
 filter:
   # 基于告警名称的过滤
@@ -110,7 +140,59 @@ filter:
       - "none"               # 排除none级别
 ```
 
-### 3. 启动服务
+### 3. ClickHouse 环境准备（可选）
+
+如果需要使用大流量告警功能，需要先准备 ClickHouse 环境：
+
+```sql
+-- 1. 创建数据库
+CREATE DATABASE IF NOT EXISTS nginxlogs;
+
+-- 2. 创建 nginx_access 表
+CREATE TABLE nginxlogs.nginx_access
+(
+    `timestamp` DateTime64(3, 'Asia/Shanghai'),
+    `server_ip` String,
+    `domain` String,
+    `request_method` String,
+    `status` Int32,
+    `top_path` String,
+    `path` String,
+    `query` String,
+    `protocol` String,
+    `referer` String,
+    `upstreamhost` String,
+    `responsetime` Float32,
+    `upstreamtime` Float32,
+    `duration` Float32,
+    `request_length` Int32,
+    `response_length` Int32,
+    `client_ip` String,
+    `client_latitude` Float32,
+    `client_longitude` Float32,
+    `remote_user` String,
+    `remote_ip` String,
+    `xff` String,
+    `client_city` String,
+    `client_region` String,
+    `client_country` String,
+    `http_user_agent` String,
+    `client_browser_family` String,
+    `client_browser_major` String,
+    `client_os_family` String,
+    `client_os_major` String,
+    `client_device_brand` String,
+    `client_device_model` String,
+    `createdtime` DateTime64(3, 'Asia/Shanghai')
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMMDD(timestamp)
+PRIMARY KEY (timestamp, server_ip, status, top_path, domain, upstreamhost, client_ip, remote_user, request_method, protocol, responsetime, upstreamtime, duration, request_length, response_length, path, referer, client_city, client_region, client_country, client_browser_family, client_browser_major, client_os_family, client_os_major, client_device_brand, client_device_model)
+TTL toDateTime(timestamp) + toIntervalDay(30)
+SETTINGS index_granularity = 8192;
+```
+
+### 4. 启动服务
 
 ```bash
 # 使用默认配置文件启动
@@ -160,18 +242,31 @@ receivers:
 
 ## 🎨 消息效果预览
 
-### 告警中状态 (FIRING)
+### 大流量告警消息效果
 ```
-🔥 Prometheus 告警通知
+📊 Prometheus 告警通知
 请关注告警信息，相关人员请注意
 
 状态: 告警中
-告警名称: HighCPUUsage
-级别: P1
-实例: server1:9100
-摘要: CPU使用率过高
-描述: 服务器CPU使用率已超过90%
-触发时间: 2025-09-03 14:30:00
+告警名称: HighTrafficAlert
+级别: P2
+域名: test.example.com
+路径: /api
+摘要: 域名 test.example.com 路径 /api 发现大流量异常
+描述: 在过去 10 分钟内:
+• 总请求数: 125
+• 大请求数量: 8 (阈值: 1.0MB)
+• 大响应数量: 12 (阈值: 5.0MB)
+• 平均请求大小: 2048.50 字节
+• 平均响应大小: 8192000.00 字节
+• 最大请求大小: 4194304 字节
+• 最大响应大小: 20971520 字节
+
+最近的大请求示例:
+1. 14:25:32 POST /api/bulk-upload (请求:4194304字节, 响应:12582912字节, 耗时:0.800s)
+2. 14:26:15 GET /api/export (请求:2621440字节, 响应:20971520字节, 耗时:1.500s)
+3. 14:27:08 GET /api/download (请求:1572864字节, 响应:15728640字节, 耗时:2.100s)
+触发时间: 2025-09-16 14:30:00
 ```
 
 ### 恢复状态 (RESOLVED)
@@ -205,6 +300,7 @@ receivers:
 
 ## 🧪 测试工具
 
+### 传统告警过滤测试
 项目提供了测试脚本来验证过滤功能：
 
 ```bash
@@ -215,6 +311,24 @@ chmod +x test_filter_api.sh
 # Windows PowerShell
 .\test_filter_api.ps1
 ```
+
+### 大流量告警测试
+测试大流量告警功能：
+
+```bash
+# Linux/macOS
+chmod +x scripts/test_traffic_alert.sh
+./scripts/test_traffic_alert.sh
+
+# Windows PowerShell
+.\scripts\test_traffic_alert.ps1
+```
+
+测试脚本将：
+1. 检查 ClickHouse 连接
+2. 验证数据库和表的存在
+3. 插入模拟的大流量数据
+4. 验证数据是否正确插入
 
 ## 📊 监控和日志
 
@@ -285,6 +399,15 @@ WantedBy=multi-user.target
    - 确认告警字段名称和值匹配规则
 
 ## 📝 更新日志
+
+### v3.0.0 (2025-09-16)
+- ✨ 新增基于 ClickHouse 的大流量告警功能
+- ✨ 支持自定义请求/响应大小阈值和计数阈值
+- ✨ 智能检测 Nginx 访问日志中的异常大流量
+- ✨ 提供详细的流量统计和异常请求示例
+- ✨ 支持按域名和路径分组的精准监控
+- 🐛 修复配置文件错误处理问题
+- 📚 完善文档和测试脚本
 
 ### v2.0.0 (2025-09-03)
 - ✨ 新增智能告警过滤功能
