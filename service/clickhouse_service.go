@@ -49,13 +49,13 @@ type NginxAccessLog struct {
 
 // TrafficStats 流量统计结果
 type TrafficStats struct {
-	TotalCount         int64   `ch:"total_count"`
+	TotalCount         uint64  `ch:"total_count"`
 	AvgRequestSize     float64 `ch:"avg_request_size"`
 	AvgResponseSize    float64 `ch:"avg_response_size"`
-	MaxRequestSize     int64   `ch:"max_request_size"`
-	MaxResponseSize    int64   `ch:"max_response_size"`
-	LargeRequestCount  int64   `ch:"large_request_count"`
-	LargeResponseCount int64   `ch:"large_response_count"`
+	MaxRequestSize     uint64  `ch:"max_request_size"`
+	MaxResponseSize    uint64  `ch:"max_response_size"`
+	LargeRequestCount  uint64  `ch:"large_request_count"`
+	LargeResponseCount uint64  `ch:"large_response_count"`
 	Domain             string  `ch:"domain"`
 	TopPath            string  `ch:"top_path"`
 }
@@ -242,7 +242,7 @@ func (c *ClickHouseService) TestConnection() error {
 	ctx := context.Background()
 
 	// 执行简单查询测试连接
-	var count int64
+	var count uint64
 	err := c.conn.QueryRow(ctx, `SELECT count(*) FROM nginxlogs.nginx_access WHERE timestamp >= now() - INTERVAL 1 MINUTE`).Scan(&count)
 	if err != nil {
 		return fmt.Errorf("ClickHouse连接测试失败: %w", err)
