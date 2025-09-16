@@ -15,6 +15,29 @@ notifiers:
   feishu:
     webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
+# ClickHouse数据库配置（大流量告警功能需要）
+clickhouse:
+  host: "localhost"
+  port: 9000
+  database: "nginxlogs"
+  username: "default"
+  password: ""
+
+# 大流量告警配置
+traffic_alert:
+  # 是否启用大流量告警
+  enabled: true
+  # 检查间隔（秒）
+  check_interval: 300
+  # 请求大小阈值（字节），超过此值视为大请求
+  request_size_threshold: 1048576   # 1MB
+  # 响应大小阈值（字节），超过此值视为大响应  
+  response_size_threshold: 5242880  # 5MB
+  # 时间窗口（分钟），检查此时间段内的流量
+  time_window: 10
+  # 触发告警的大请求/响应数量阈值
+  count_threshold: 5
+
 # 告警过滤规则配置（可选）
 filter:
   # 基于告警名称的过滤规则
