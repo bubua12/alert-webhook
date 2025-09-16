@@ -14,21 +14,21 @@ import (
 // TrafficAlertService 流量告警服务
 type TrafficAlertService struct {
 	clickhouseService *ClickHouseService
-	config           *config.AppConfig
-	notifiers        map[string]string
-	enabledClients   []string
-	stopChan         chan bool
-	wg               sync.WaitGroup
+	config            *config.AppConfig
+	notifiers         map[string]string
+	enabledClients    []string
+	stopChan          chan bool
+	wg                sync.WaitGroup
 }
 
 // NewTrafficAlertService 创建流量告警服务实例
 func NewTrafficAlertService(clickhouseService *ClickHouseService, cfg *config.AppConfig, notifiers map[string]string, enabledClients []string) *TrafficAlertService {
 	return &TrafficAlertService{
 		clickhouseService: clickhouseService,
-		config:           cfg,
-		notifiers:        notifiers,
-		enabledClients:   enabledClients,
-		stopChan:         make(chan bool),
+		config:            cfg,
+		notifiers:         notifiers,
+		enabledClients:    enabledClients,
+		stopChan:          make(chan bool),
 	}
 }
 
@@ -40,7 +40,7 @@ func (t *TrafficAlertService) Start() {
 	}
 
 	log.Printf("启动大流量告警服务，检查间隔: %d秒", t.config.TrafficAlert.CheckInterval)
-	
+
 	t.wg.Add(1)
 	go t.monitorTraffic()
 }
@@ -50,7 +50,7 @@ func (t *TrafficAlertService) Stop() {
 	if !t.config.TrafficAlert.Enabled {
 		return
 	}
-	
+
 	log.Println("正在停止大流量告警服务...")
 	close(t.stopChan)
 	t.wg.Wait()
@@ -60,7 +60,7 @@ func (t *TrafficAlertService) Stop() {
 // monitorTraffic 监控流量的主循环
 func (t *TrafficAlertService) monitorTraffic() {
 	defer t.wg.Done()
-	
+
 	ticker := time.NewTicker(time.Duration(t.config.TrafficAlert.CheckInterval) * time.Second)
 	defer ticker.Stop()
 
@@ -77,7 +77,7 @@ func (t *TrafficAlertService) monitorTraffic() {
 // checkAndAlert 检查流量异常并发送告警
 func (t *TrafficAlertService) checkAndAlert() {
 	log.Println("开始检查大流量异常...")
-	
+
 	// 查询流量异常
 	trafficStats, err := t.clickhouseService.CheckTrafficAnomalies()
 	if err != nil {
@@ -108,7 +108,7 @@ func (t *TrafficAlertService) generateAndSendAlert(stat TrafficStats) {
 
 	// 构造告警数据
 	alert := t.createTrafficAlert(stat, largeRequests)
-	
+
 	// 构造 template.Data
 	data := template.Data{
 		Status: "firing",
@@ -136,20 +136,20 @@ func (t *TrafficAlertService) generateAndSendAlert(stat TrafficStats) {
 // createTrafficAlert 创建流量告警对象
 func (t *TrafficAlertService) createTrafficAlert(stat TrafficStats, largeRequests []NginxAccessLog) template.Alert {
 	now := time.Now()
-	
+
 	// 生成告警摘要
 	summary := fmt.Sprintf("域名 %s 路径 %s 发现大流量异常", stat.Domain, stat.TopPath)
-	
+
 	// 生成详细描述
 	description := fmt.Sprintf(
 		"在过去 %d 分钟内:\n"+
-		"• 总请求数: %d\n"+
-		"• 大请求数量: %d (阈值: %s)\n"+
-		"• 大响应数量: %d (阈值: %s)\n"+
-		"• 平均请求大小: %.2f 字节\n"+
-		"• 平均响应大小: %.2f 字节\n"+
-		"• 最大请求大小: %d 字节\n"+
-		"• 最大响应大小: %d 字节",
+			"• 总请求数: %d\n"+
+			"• 大请求数量: %d (阈值: %s)\n"+
+			"• 大响应数量: %d (阈值: %s)\n"+
+			"• 平均请求大小: %.2f 字节\n"+
+			"• 平均响应大小: %.2f 字节\n"+
+			"• 最大请求大小: %d 字节\n"+
+			"• 最大响应大小: %d 字节",
 		t.config.TrafficAlert.TimeWindow,
 		stat.TotalCount,
 		stat.LargeRequestCount,
@@ -185,7 +185,7 @@ func (t *TrafficAlertService) createTrafficAlert(stat TrafficStats, largeRequest
 	return template.Alert{
 		Status: "firing",
 		Labels: template.KV{
-			"alertname":  "HighTrafficAlert",
+			"alertname":  "异常流量告警",
 			"severity":   "warning",
 			"domain":     stat.Domain,
 			"top_path":   stat.TopPath,
