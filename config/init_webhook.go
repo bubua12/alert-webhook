@@ -1,6 +1,7 @@
 package config
 
 import (
+	"alert-webhook/console"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -105,7 +106,7 @@ filter:
 	if err != nil {
 		log.Fatalf("配置初始化失败: %v", err)
 	}
-	fmt.Println("配置初始化成功")
+	console.Success("[Success]", "配置初始化成功")
 
 	// 保存全局配置引用
 	GlobalConfig = cfg
@@ -209,6 +210,3 @@ func sendTestMessage(clientType, url string, msg map[string]interface{}) bool {
 
 	return true
 }
-
-// StartWebhookServer 启动webhook服务
-// 此函数已移动到 main.go 中以避免循环引用

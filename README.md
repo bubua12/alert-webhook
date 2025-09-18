@@ -350,6 +350,7 @@ chmod +x scripts/test_traffic_alert.sh
 ## 🚀 部署建议
 
 ### Docker 部署
+
 ```dockerfile
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
