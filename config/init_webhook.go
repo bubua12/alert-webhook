@@ -40,6 +40,59 @@ notifiers:
     webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
   feishu:
     webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+clickhouse:
+  host: "localhost"
+  port: 9000
+  database: "nginxlogs"
+  username: "default"
+  password: ""
+
+# 大流量告警配置
+traffic_alert:
+  # 是否启用大流量告警
+  enabled: true
+  # 检查间隔（秒）
+  check_interval: 300
+  # 请求大小阈值（字节），超过此值视为大请求
+  request_size_threshold: 1048576   # 1MB
+  # 响应大小阈值（字节），超过此值视为大响应  
+  response_size_threshold: 5242880  # 5MB
+  # 时间窗口（分钟），检查此时间段内的流量
+  time_window: 10
+  # 触发告警的大请求/响应数量阈值
+  count_threshold: 5
+
+# 告警过滤规则配置（可选）
+filter:
+  # 基于告警名称的过滤规则
+  alert_name:
+    # 包含规则：只有匹配这些规则的告警才会被发送（支持通配符*）
+    include:
+      - "HighCPU*"              # 匹配以HighCPU开头的告警
+      - "*Memory*"              # 匹配包含Memory的告警  
+      - "DiskSpaceLow"          # 精确匹配
+      - "DatabaseConnectionError" # 精确匹配
+      # - "*"                   # 匹配所有告警（如果需要允许所有告警名称）
+    # 排除规则：匹配这些规则的告警不会被发送（优先级高于include）
+    exclude:
+      - "*Test*"                # 排除包含Test的告警
+      - "DebugAlert"            # 排除调试告警
+      - "InfoInhibitor"         # 排除信息抑制告警
+
+  # 基于告警级别的过滤规则  
+  severity:
+    # 包含规则：只发送这些级别的告警
+    include:
+      - "emergency"             # 紧急告警
+      - "critical"              # 严重告警
+      - "warning"               # 警告告警
+      # - "info"                 # 信息告警（可选）
+    # 排除规则：不发送这些级别的告警
+    exclude:
+      - "info"                  # 排除信息级别告警
+      - "none"                  # 排除none级别
+
 `
 		err = os.WriteFile(*configPath, []byte(defaultConfig), 0644)
 		if err != nil {
