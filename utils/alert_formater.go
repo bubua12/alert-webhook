@@ -104,7 +104,7 @@ func AlertFormatWechat(data template.Data) string {
 			msg += fmt.Sprintf(">**级别: <font color=\"%s\">%s</font>**\n", MapSeverityColor(alert.Labels["severity"]), MapSeverity(alert.Labels["severity"]))
 			msg += fmt.Sprintf(">**实例**: <font color=\"black\">%s</font>\n", alert.Labels["instance"])
 			msg += fmt.Sprintf(">**摘要**: <font color=\"black\">%s</font>\n", alert.Annotations["summary"])
-			msg += fmt.Sprintf(">**描述**: <font color=\"black\">%s</font>\n", alert.Annotations["description"])
+			msg += fmt.Sprintf(">**描述**: %s\n", alert.Annotations["description"])
 			msg += fmt.Sprintf(">**触发时间**: <font color=\"black\">%s</font>\n", alert.StartsAt.In(loc).Format("2006-01-02 15:04:05"))
 		}
 	} else if data.Status == "resolved" {
