@@ -70,10 +70,10 @@ filter:
   alert_name:
     # 包含规则：只有匹配这些规则的告警才会被发送（支持通配符*）
     include:
-      - "HighCPU*"              # 匹配以HighCPU开头的告警
-      - "*Memory*"              # 匹配包含Memory的告警  
-      - "DiskSpaceLow"          # 精确匹配
-      - "DatabaseConnectionError" # 精确匹配
+      #- "HighCPU*"              # 匹配以HighCPU开头的告警
+      #- "*Memory*"              # 匹配包含Memory的告警  
+      #- "DiskSpaceLow"          # 精确匹配
+      #- "DatabaseConnectionError" # 精确匹配
       # - "*"                   # 匹配所有告警（如果需要允许所有告警名称）
     # 排除规则：匹配这些规则的告警不会被发送（优先级高于include）
     exclude:
@@ -85,9 +85,9 @@ filter:
   severity:
     # 包含规则：只发送这些级别的告警
     include:
-      - "emergency"             # 紧急告警
-      - "critical"              # 严重告警
-      - "warning"               # 警告告警
+      #- "emergency"             # 紧急告警
+      #- "critical"              # 严重告警
+      #- "warning"               # 警告告警
       # - "info"                 # 信息告警（可选）
     # 排除规则：不发送这些级别的告警
     exclude:
@@ -194,7 +194,12 @@ func sendTestMessage(clientType, url string, msg map[string]interface{}) bool {
 		log.Printf("[%s] 发送请求失败: %v", clientType, err)
 		return false
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Fatalln("close body err:", err)
+		}
+	}(resp.Body)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
