@@ -1,9 +1,9 @@
 #!/bin/bash
 
-APP_NAME="kube-alert"
+APP_NAME="alert-webhook"
 LOG_DIR="./logs"
 LOG_FILE="$LOG_DIR/server.log"
-PID_FILE="wecom-alert.pid"
+PID_FILE="alert-webhook.pid"
 
 mkdir -p $LOG_DIR
 

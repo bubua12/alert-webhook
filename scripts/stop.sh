@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PID_FILE="wecom-alert.pid"
+PID_FILE="alert-webhook.pid"
 
 if [ ! -f "$PID_FILE" ]; then
   echo "PID 文件不存在，程序可能未运行"

@@ -91,7 +91,9 @@ func AlertFormatWechat(data template.Data) string {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 
 	if data.Status == "firing" {
-		msg += "**🔥 <font size=18 color=\"red\">Prometheus 告警通知</font>**\n"
+		// 获取最高严重级别的告警来决定标题颜色
+		highestSeverity := getHighestSeverity(data.Alerts)
+		msg += fmt.Sprintf("**🔥 <font size=18 color=\"%s\">Prometheus 告警通知</font>**\n", MapSeverityColor(highestSeverity))
 		msg += "请关注告警信息，相关人员请注意\n"
 		//msg += ">**状态: <font color=\"red\">告警中</font>**\n"
 
@@ -104,7 +106,7 @@ func AlertFormatWechat(data template.Data) string {
 			msg += fmt.Sprintf(">**级别: <font color=\"%s\">%s</font>**\n", MapSeverityColor(alert.Labels["severity"]), MapSeverity(alert.Labels["severity"]))
 			msg += fmt.Sprintf(">**实例**: <font color=\"black\">%s</font>\n", alert.Labels["instance"])
 			msg += fmt.Sprintf(">**摘要**: <font color=\"black\">%s</font>\n", alert.Annotations["summary"])
-			msg += fmt.Sprintf(">**描述**: <font color=\"black\">%s</font>\n", alert.Annotations["description"])
+			msg += fmt.Sprintf(">**描述**: %s\n", alert.Annotations["description"])
 			msg += fmt.Sprintf(">**触发时间**: <font color=\"black\">%s</font>\n", alert.StartsAt.In(loc).Format("2006-01-02 15:04:05"))
 		}
 	} else if data.Status == "resolved" {
@@ -139,6 +141,42 @@ func MapSeverity(severity string) string {
 	default:
 		return severity
 	}
+}
+
+// getHighestSeverity 获取告警列表中的最高严重级别
+// 优先级：emergency > critical > warning > info > 其他
+func getHighestSeverity(alerts []template.Alert) string {
+	if len(alerts) == 0 {
+		return "info"
+	}
+
+	// 定义严重级别优先级
+	severityPriority := map[string]int{
+		"emergency": 4,
+		"critical":  3,
+		"warning":   2,
+		"info":      1,
+	}
+
+	highestSeverity := "info"
+	highestPriority := 0
+
+	for _, alert := range alerts {
+		severity := alert.Labels["severity"]
+		if priority, exists := severityPriority[severity]; exists {
+			if priority > highestPriority {
+				highestPriority = priority
+				highestSeverity = severity
+			}
+		} else {
+			// 对于未知的严重级别，如果当前没有找到任何已知级别，则使用它
+			if highestPriority == 0 {
+				highestSeverity = severity
+			}
+		}
+	}
+
+	return highestSeverity
 }
 
 // MapSeverityColor 返回告警等级对应的字体颜色（用于企业微信）

@@ -142,14 +142,14 @@ func (t *TrafficAlertService) createTrafficAlert(stat TrafficStats, largeRequest
 
 	// 生成详细描述
 	description := fmt.Sprintf(
-		"在过去 %d 分钟内:\n"+
-			"• 总请求数: %d\n"+
-			"• 大请求数量: %d (阈值: %s)\n"+
-			"• 大响应数量: %d (阈值: %s)\n"+
-			"• 平均请求大小: %.2f 字节\n"+
-			"• 平均响应大小: %.2f 字节\n"+
-			"• 最大请求大小: %d 字节\n"+
-			"• 最大响应大小: %d 字节",
+		"在过去 %d 分钟内，流量统计信息如下\n"+
+			"\t• 总请求数: %d\n"+
+			"\t• 大请求数量: %d (阈值: %s)\n"+
+			"\t• 大响应数量: %d (阈值: %s)\n"+
+			"\t• 平均请求大小: %.2f 字节\n"+
+			"\t• 平均响应大小: %.2f 字节\n"+
+			"\t• 最大请求大小: %d 字节\n"+
+			"\t• 最大响应大小: %d 字节",
 		t.config.TrafficAlert.TimeWindow,
 		stat.TotalCount,
 		stat.LargeRequestCount,
@@ -164,7 +164,7 @@ func (t *TrafficAlertService) createTrafficAlert(stat TrafficStats, largeRequest
 
 	// 添加详细的大请求信息
 	if len(largeRequests) > 0 {
-		description += "\n\n最近的大请求示例:"
+		description += "\n最近的大请求示例:"
 		for i, req := range largeRequests {
 			if i >= 3 { // 最多显示3个例子
 				break
@@ -191,6 +191,7 @@ func (t *TrafficAlertService) createTrafficAlert(stat TrafficStats, largeRequest
 			"top_path":   stat.TopPath,
 			"source":     "clickhouse",
 			"alert_type": "traffic",
+			"instance":   stat.Domain,
 		},
 		Annotations: template.KV{
 			"summary":     summary,

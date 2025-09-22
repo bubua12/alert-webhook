@@ -1,5 +1,7 @@
+# logs && config
 logs
 config.yaml
 
-
-
+# binary file
+alert-webhook
+*.exe
