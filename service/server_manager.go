@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ServerManager HTTP服务器管理器
+// ServerManager HTTP服务器管理器 用于启动监听端口，接收AlertManager推送的告警请求
 type ServerManager struct {
 	server *http.Server
 }
@@ -29,8 +29,9 @@ func (sm *ServerManager) StartWebhookServer(addr string) error {
 		Handler: router,
 	}
 
-	log.Printf("Webhook Gin 服务启动于 %s\n", addr)
+	log.Printf("Alert Webhook服务启动于 %s\n", addr)
 	if err := sm.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("Alert Webhook服务启动失败, 错误详细信息: %s\n", err)
 		return err
 	}
 	return nil

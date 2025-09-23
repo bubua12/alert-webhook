@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 // NginxAccessLog Nginx访问日志结构体
@@ -150,7 +151,12 @@ func (c *ClickHouseService) CheckTrafficAnomalies() ([]TrafficStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("查询流量异常数据失败: %w", err)
 	}
-	defer rows.Close()
+	defer func(rows driver.Rows) {
+		err := rows.Close()
+		if err != nil {
+			log.Fatalf("[CheckTrafficAnomalies]rows.Close()异常，错误信息: %s", err)
+		}
+	}(rows)
 
 	var results []TrafficStats
 	for rows.Next() {
@@ -211,27 +217,32 @@ func (c *ClickHouseService) GetRecentLargeRequests(domain, topPath string, limit
 	if err != nil {
 		return nil, fmt.Errorf("查询大请求详情失败: %w", err)
 	}
-	defer rows.Close()
+	defer func(rows driver.Rows) {
+		err := rows.Close()
+		if err != nil {
+			log.Fatalf("[GetRecentLargeRequests]rows.Close()异常，错误信息: %s", err)
+		}
+	}(rows)
 
 	var results []NginxAccessLog
 	for rows.Next() {
-		var log NginxAccessLog
+		var nginxLog NginxAccessLog
 		if err := rows.Scan(
-			&log.Timestamp,
-			&log.ServerIP,
-			&log.Domain,
-			&log.RequestMethod,
-			&log.Status,
-			&log.TopPath,
-			&log.Path,
-			&log.RequestLength,
-			&log.ResponseLength,
-			&log.ClientIP,
-			&log.ResponseTime,
+			&nginxLog.Timestamp,
+			&nginxLog.ServerIP,
+			&nginxLog.Domain,
+			&nginxLog.RequestMethod,
+			&nginxLog.Status,
+			&nginxLog.TopPath,
+			&nginxLog.Path,
+			&nginxLog.RequestLength,
+			&nginxLog.ResponseLength,
+			&nginxLog.ClientIP,
+			&nginxLog.ResponseTime,
 		); err != nil {
 			continue
 		}
-		results = append(results, log)
+		results = append(results, nginxLog)
 	}
 
 	return results, nil

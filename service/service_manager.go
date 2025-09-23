@@ -30,15 +30,18 @@ func (sm *ServiceManager) InitializeTrafficAlert() {
 	sm.clickhouseService, err = NewClickHouseService(config.GlobalConfig)
 	if err != nil {
 		log.Printf("ClickHouse服务初始化失败: %v", err)
-		console.Error("[Warning]", "ClickHouse连接失败，大流量告警功能将被禁用")
+		console.Error("[Error]", "ClickHouse连接失败，大流量告警功能将被禁用")
 		return
 	}
 
 	// 测试ClickHouse连接
 	if err := sm.clickhouseService.TestConnection(); err != nil {
 		log.Printf("ClickHouse连接测试失败: %v", err)
-		console.Error("[Warning]", "ClickHouse连接测试失败，大流量告警功能将被禁用")
-		sm.clickhouseService.Close()
+		console.Error("[Error]", "ClickHouse连接测试失败，大流量告警功能将被禁用")
+		err := sm.clickhouseService.Close()
+		if err != nil {
+			return
+		}
 		sm.clickhouseService = nil
 		return
 	}
