@@ -61,20 +61,36 @@ type NotifierConfig struct {
 	WebhookURL string `yaml:"webhook_url"`
 }
 
+// ThirdPartyAPIConfig 第三方API配置
+type ThirdPartyAPIConfig struct {
+	// API接口URL
+	URL string `yaml:"url"`
+	// API Key，用于Authorization Bearer
+	APIKey string `yaml:"api_key"`
+	// 场景描述
+	Description string `yaml:"description"`
+	// 是否启用
+	Enabled bool `yaml:"enabled"`
+	// 是否发送恢复告警（默认false，只发送告警中的告警）
+	SendResolved bool `yaml:"send_resolved"`
+}
+
 type ServerConfig struct {
 	Port string `yaml:"port"`
 }
 
 type AppConfig struct {
-	Clients      []string                  `yaml:"client"`
-	Notifiers    map[string]NotifierConfig `yaml:"notifiers"`
-	Server       ServerConfig              `yaml:"server"`
+	Clients      []string                           `yaml:"client"`
+	Notifiers    map[string]NotifierConfig          `yaml:"notifiers"`
+	Server       ServerConfig                       `yaml:"server"`
 	// 告警过滤规则
-	Filter       AlertFilter               `yaml:"filter"`
+	Filter       AlertFilter                        `yaml:"filter"`
 	// ClickHouse配置
-	ClickHouse   ClickHouseConfig          `yaml:"clickhouse"`
+	ClickHouse   ClickHouseConfig                   `yaml:"clickhouse"`
 	// 大流量告警配置
-	TrafficAlert TrafficAlertConfig        `yaml:"traffic_alert"`
+	TrafficAlert TrafficAlertConfig                 `yaml:"traffic_alert"`
+	// 第三方API配置
+	ThirdPartyAPIs map[string]ThirdPartyAPIConfig   `yaml:"third_party_apis"`
 }
 
 // LoadConfig 根据传入配置文件的路径 --- 加载配置

@@ -133,12 +133,51 @@ func GinAlertHandler(notifiers map[string]string, enabledClients []string, appCo
 
 		wg.Wait()
 
+		// 发送到第三方 API
+		for apiName, apiConfig := range appConfig.ThirdPartyAPIs {
+			if !apiConfig.Enabled {
+				log.Printf("第三方API [%s] 已禁用，跳过", apiName)
+				continue
+			}
+
+			if apiConfig.URL == "" || apiConfig.APIKey == "" {
+				log.Printf("第三方API [%s] 配置不完整，跳过", apiName)
+				continue
+			}
+
+			// 检查是否应该发送恢复告警
+			if data.Status == "resolved" && !apiConfig.SendResolved {
+				log.Printf("第三方API [%s] 配置不发送恢复告警，跳过", apiName)
+				continue
+			}
+
+			wg.Add(1)
+			go func(name string, config config.ThirdPartyAPIConfig) {
+				defer wg.Done()
+
+				// 将告警转换为纯文本格式
+				plainTextContent := utils.AlertFormatPlainText(data)
+
+				log.Printf("发送告警到第三方API [%s]: %s", name, config.Description)
+
+				if err := SendThirdPartyAPI(name, config.URL, config.APIKey, plainTextContent); err != nil {
+					log.Printf("第三方API [%s] 发送失败: %v", name, err)
+					failedClients = append(failedClients, fmt.Sprintf("%s(API)", name))
+				} else {
+					log.Printf("第三方API [%s] 发送成功", name)
+				}
+			}(apiName, apiConfig)
+		}
+
+		wg.Wait()
+
 		if len(failedClients) > 0 {
 			c.String(http.StatusInternalServerError,
 				fmt.Sprintf("部分客户端发送失败: %v", failedClients))
 		} else {
 			c.String(http.StatusOK, "告警已成功发送到所有客户端")
 		}
+
 	}
 }
 

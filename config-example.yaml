@@ -74,3 +74,29 @@ filter:
 # 3. exclude规则优先级高于include规则
 # 4. alert_name和severity规则都必须通过，告警才会被发送
 # 5. 可以只配置其中一种过滤规则，另一种不配置表示不限制
+
+# 第三方API配置（可选）
+third_party_apis:
+  # pod排查场景
+  pod_troubleshoot:
+    url: "http://192.168.1.168/v1/workflows/run"
+    api_key: "your-pod-troubleshoot-api-key-here"
+    description: "用于Pod问题排查的告警"
+    enabled: true
+    send_resolved: false  # 是否发送恢复告警，默认false只发送告警中的告警
+    
+  # 日报发送场景
+  daily_report:
+    url: "http://192.168.1.168/v1/workflows/run"
+    api_key: "your-daily-report-api-key-here"
+    description: "用于发送日报的告警信息"
+    enabled: false  # 默认禁用，可根据需要开启
+    send_resolved: true  # 如果启用，会同时发送告警和恢复通知
+    
+  # 健康检查场景  
+  health_check:
+    url: "http://192.168.1.168/v1/workflows/run"
+    api_key: "your-health-check-api-key-here"
+    description: "用于系统健康检查的告警"
+    enabled: true
+    send_resolved: false  # 只关注问题出现，不关注问题恢复

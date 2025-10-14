@@ -210,14 +210,44 @@ func DingTalkMapSeverityColor(severity string) string {
 	}
 }
 
-func FilterValidAlerts(alerts []template.Alert) []template.Alert {
-	valid := make([]template.Alert, 0)
-	for _, alert := range alerts {
-		if alert.Labels["severity"] != "none" {
-			valid = append(valid, alert)
+func AlertFormatPlainText(data template.Data) string {
+	var builder strings.Builder
+	alertCount := len(data.Alerts)
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+
+	if data.Status == "firing" {
+		builder.WriteString("🔥 Prometheus告警通知\n")
+		builder.WriteString("请关注告警信息，相关人员请注意\n\n")
+
+		for i, alert := range data.Alerts {
+			if alertCount > 1 && i > 0 {
+				builder.WriteString("\n---\n\n")
+			}
+
+			builder.WriteString(fmt.Sprintf("状态: 告警中\n"))
+			builder.WriteString(fmt.Sprintf("告警名称: %s\n", alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("级别: %s\n", MapSeverity(alert.Labels["severity"])))
+			builder.WriteString(fmt.Sprintf("实例: %s\n", alert.Labels["instance"]))
+			builder.WriteString(fmt.Sprintf("摘要: %s\n", alert.Annotations["summary"]))
+			if desc, ok := alert.Annotations["description"]; ok && desc != "" {
+				builder.WriteString(fmt.Sprintf("描述: %s\n", desc))
+			}
+			builder.WriteString(fmt.Sprintf("触发时间: %s\n", alert.StartsAt.In(loc).Format("2006-01-02 15:04:05")))
+		}
+	} else if data.Status == "resolved" {
+		builder.WriteString("✅ Prometheus告警恢复\n")
+		builder.WriteString("状态: 已恢复\n\n")
+
+		for i, alert := range data.Alerts {
+			if alertCount > 1 && i > 0 {
+				builder.WriteString("\n---\n\n")
+			}
+			builder.WriteString(fmt.Sprintf("告警名称: %s\n", alert.Labels["alertname"]))
+			builder.WriteString(fmt.Sprintf("恢复时间: %s\n", alert.EndsAt.In(loc).Format("2006-01-02 15:04:05")))
 		}
 	}
-	return valid
+
+	return builder.String()
 }
 
 // SplitWeChatAlerts 将告警按批次分组，确保每批消息不超过企业微信长度限制
@@ -290,4 +320,15 @@ func SplitWeChatAlerts(data template.Data) []template.Data {
 	}
 
 	return result
+}
+
+// FilterValidAlerts 过滤有效告警
+func FilterValidAlerts(alerts []template.Alert) []template.Alert {
+	valid := make([]template.Alert, 0)
+	for _, alert := range alerts {
+		if alert.Labels["severity"] != "none" {
+			valid = append(valid, alert)
+		}
+	}
+	return valid
 }
