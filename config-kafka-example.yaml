@@ -1,0 +1,84 @@
+server:
+  port: "0.0.0.0:18082"
+
+# 消息接收客户端，支持配置数组同时发送
+client:
+  - wechat
+#  - dingtalk
+#  - feishu
+
+notifiers:
+  wechat:
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
+  dingtalk:
+    webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
+  feishu:
+    webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# ClickHouse数据库配置（大流量告警功能需要，不使用可不配置）
+clickhouse:
+  host: "localhost"
+  port: 9000
+  database: "nginxlogs"
+  username: "default"
+  password: ""
+
+# 大流量告警配置（不使用可关闭）
+traffic_alert:
+  # 是否启用大流量告警
+  enabled: false
+  check_interval: 300
+  request_size_threshold: 1048576
+  response_size_threshold: 5242880
+  time_window: 10
+  count_threshold: 5
+
+# Kafka消费者组监控配置（推荐配置）
+kafka_monitor:
+  # 是否启用Kafka监控
+  enabled: true
+  # Kafka UI的API地址（不包含路径）
+  # 替换为你的 Kafka UI 地址
+  kafka_ui_url: "http://localhost:8090"
+  # Kafka集群名称（在Kafka UI中配置的集群名称）
+  # 替换为你在 Kafka UI 中配置的集群名称
+  cluster_name: "local-kafka"
+  # 检查间隔（秒）- 建议 60-300 秒
+  check_interval: 60
+  # 消费者组积压阈值（消息数量）
+  # 根据你的业务情况调整，超过此值将触发告警
+  consumer_lag_threshold: 100000
+  # 需要监控的消费者组列表（为空则监控所有消费者组）
+  # 如果只想监控特定的消费者组，可以在这里配置
+  monitored_groups:
+    - "order-group-01"
+    - "order-group-02"
+  # 忽略的消费者组列表
+  # 不需要监控的消费者组可以配置在这里
+  ignored_groups:
+    - "consumer-group-01"
+
+# 告警过滤规则配置（可选）
+filter:
+  # 基于告警名称的过滤规则
+  alert_name:
+    include:
+    exclude:
+      
+  # 基于告警级别的过滤规则  
+  severity:
+    include:
+    exclude:
+      - "info"
+      - "none"
+
+# 配置说明：
+# 1. Kafka 监控功能独立于大流量告警，可以单独启用
+# 2. kafka_ui_url: Kafka UI 的访问地址，确保服务能够访问到
+# 3. cluster_name: 必须与 Kafka UI 中配置的集群名称一致
+# 4. monitored_groups: 为空时监控所有消费者组，建议只监控重要的消费者组
+# 5. ignored_groups: 优先级高于 monitored_groups，可用于排除不重要的消费者组
+# 6. consumer_lag_threshold: 根据业务场景调整，建议值：
+#    - 低延迟要求: 10000-50000
+#    - 一般场景: 50000-200000
+#    - 批处理场景: 200000-1000000
