@@ -41,6 +41,24 @@ type TrafficAlertConfig struct {
 	CountThreshold int `yaml:"count_threshold"`
 }
 
+// KafkaMonitorConfig Kafka监控配置
+type KafkaMonitorConfig struct {
+	// 是否启用Kafka监控
+	Enabled bool `yaml:"enabled"`
+	// Kafka UI的API地址
+	KafkaUIURL string `yaml:"kafka_ui_url"`
+	// 集群名称
+	ClusterName string `yaml:"cluster_name"`
+	// 检查间隔（秒）
+	CheckInterval int `yaml:"check_interval"`
+	// 消费者组积压阈值
+	ConsumerLagThreshold int64 `yaml:"consumer_lag_threshold"`
+	// 需要监控的消费者组（为空则监控所有）
+	MonitoredGroups []string `yaml:"monitored_groups"`
+	// 忽略的消费者组
+	IgnoredGroups []string `yaml:"ignored_groups"`
+}
+
 // AlertNameFilter 告警名称过滤规则
 type AlertNameFilter struct {
 	// 包含规则：只有在此列表中的告警名称才会被转发
@@ -75,6 +93,8 @@ type AppConfig struct {
 	ClickHouse   ClickHouseConfig          `yaml:"clickhouse"`
 	// 大流量告警配置
 	TrafficAlert TrafficAlertConfig        `yaml:"traffic_alert"`
+	// Kafka监控配置
+	KafkaMonitor KafkaMonitorConfig        `yaml:"kafka_monitor"`
 }
 
 // LoadConfig 根据传入配置文件的路径 --- 加载配置

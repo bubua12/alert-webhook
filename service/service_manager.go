@@ -10,6 +10,7 @@ import (
 type ServiceManager struct {
 	clickhouseService   *ClickHouseService
 	trafficAlertService *TrafficAlertService
+	kafkaMonitorService *KafkaMonitorService
 }
 
 // NewServiceManager 创建服务管理器
@@ -57,6 +58,37 @@ func (sm *ServiceManager) InitializeTrafficAlert() {
 	console.Success("[Success]", "大流量告警服务启动成功")
 }
 
+// InitializeKafkaMonitor 初始化Kafka监控服务
+func (sm *ServiceManager) InitializeKafkaMonitor() {
+	if !config.GlobalConfig.KafkaMonitor.Enabled {
+		log.Println("Kafka监控功能未配置启用，将不开启Kafka监控功能")
+		console.Warning("[Warning]", "Kafka监控功能未启用，将不开启Kafka监控功能")
+		return
+	}
+
+	// 验证配置
+	if config.GlobalConfig.KafkaMonitor.KafkaUIURL == "" {
+		log.Println("Kafka UI URL未配置，Kafka监控功能将被禁用")
+		console.Error("[Error]", "Kafka UI URL未配置")
+		return
+	}
+
+	if config.GlobalConfig.KafkaMonitor.ClusterName == "" {
+		log.Println("Kafka集群名称未配置，Kafka监控功能将被禁用")
+		console.Error("[Error]", "Kafka集群名称未配置")
+		return
+	}
+
+	// 启动Kafka监控服务
+	sm.kafkaMonitorService = NewKafkaMonitorService(
+		config.GlobalConfig,
+		config.Notifiers,
+		config.EnabledClients,
+	)
+	sm.kafkaMonitorService.Start()
+	console.Success("[Success]", "Kafka监控服务启动成功")
+}
+
 // Shutdown 优雅关闭所有服务
 func (sm *ServiceManager) Shutdown() {
 	log.Println("正在关闭服务管理器...")
@@ -65,6 +97,12 @@ func (sm *ServiceManager) Shutdown() {
 	if sm.trafficAlertService != nil {
 		sm.trafficAlertService.Stop()
 		log.Println("大流量告警服务已停止")
+	}
+
+	// 停止Kafka监控服务
+	if sm.kafkaMonitorService != nil {
+		sm.kafkaMonitorService.Stop()
+		log.Println("Kafka监控服务已停止")
 	}
 
 	// 关闭ClickHouse连接

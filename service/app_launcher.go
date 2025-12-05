@@ -56,6 +56,8 @@ func (app *AppLauncher) testClientsConnection() {
 func (app *AppLauncher) initializeServices() {
 	// 初始化大流量告警服务
 	app.serviceManager.InitializeTrafficAlert()
+	// 初始化Kafka监控服务
+	app.serviceManager.InitializeKafkaMonitor()
 }
 
 // setupGracefulShutdown 设置优雅关闭
