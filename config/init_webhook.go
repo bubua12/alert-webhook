@@ -94,6 +94,26 @@ filter:
       - "info"                  # 排除信息级别告警
       - "none"                  # 排除none级别
 
+# Kafka消费者组监控配置
+kafka_monitor:
+  # 是否启用Kafka监控
+  enabled: false
+  # Kafka UI的API地址（不包含路径）
+  kafka_ui_url: "http://localhost:8090"
+  # Kafka集群名称（在Kafka UI中配置的集群名称）
+  cluster_name: "local-kafka"
+  # 检查间隔（秒）
+  check_interval: 60
+  # 消费者组积压阈值（消息数量）
+  consumer_lag_threshold: 100000
+  # 需要监控的消费者组列表（为空则监控所有）
+  monitored_groups:
+  #    - "order-group-01"
+  #    - "order-group-02"
+  # 忽略的消费者组列表
+  ignored_groups:
+#    - "consumer-group-01"
+
 `
 		err = os.WriteFile(*configPath, []byte(defaultConfig), 0644)
 		if err != nil {
