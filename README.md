@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/Go-1.24-blue.svg" alt="Go Version">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/github/downloads/bubua12/alert-webhook/total.svg" alt="Releases">
 </p>
 
 ---
