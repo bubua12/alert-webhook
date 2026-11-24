@@ -224,7 +224,7 @@ export function mountDashboard(root, ctx) {
             <div class="service-card-meta">
               <div class="metric-mini">
                 <div class="metric-mini-label">监听端口</div>
-                <div class="metric-mini-val mono">${escapeHtml(data.server_port || '--')}</div>
+                <div class="metric-mini-val mono" title="${escapeHtml(data.server_port || '--')}">${escapeHtml(data.server_port || '--')}</div>
               </div>
               <div class="metric-mini">
                 <div class="metric-mini-label">API 鉴权</div>

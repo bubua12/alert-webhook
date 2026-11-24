@@ -688,8 +688,26 @@ textarea {
 
 .charts-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(240px, 1fr) minmax(0, 1.1fr);
   gap: 16px;
+}
+
+.channel-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-card-actions {
+  margin-top: auto;
+  padding-top: 12px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* KPI Cards */
@@ -910,14 +928,15 @@ textarea {
 
 .donut-layout {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .donut-svg-wrap {
   position: relative;
-  width: 148px;
-  height: 148px;
+  width: 128px;
+  height: 128px;
   flex-shrink: 0;
 }
 
@@ -932,7 +951,7 @@ textarea {
 }
 
 .donut-total {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
@@ -944,11 +963,11 @@ textarea {
 }
 
 .donut-legend-list {
-  flex: 1;
+  width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 4px;
 }
 
 .donut-legend-row {
@@ -959,6 +978,7 @@ textarea {
   padding: 4px 7px;
   border-radius: var(--radius-sm);
   font-size: 12px;
+  white-space: nowrap;
   cursor: default;
   transition: background var(--transition);
 }
@@ -1037,7 +1057,9 @@ textarea {
   background: var(--bg-subtle);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  padding: 8px 9px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .metric-mini-label {
@@ -1046,11 +1068,14 @@ textarea {
 }
 
 .metric-mini-val {
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-primary);
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .copy-box {
