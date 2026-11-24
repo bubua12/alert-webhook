@@ -5,6 +5,7 @@ import (
 	"alert-webhook/console"
 	"alert-webhook/service"
 	"alert-webhook/store"
+	"alert-webhook/web"
 	"flag"
 	"io"
 	"log"
@@ -37,6 +38,8 @@ func main() {
 
 	cfg := cfgMgr.Get()
 	setupLogging(cfg.Server.LogDir, logBuffer)
+
+	service.RegisterUIFS(web.StaticFS())
 
 	alertStore := store.NewAlertStore(cfg.Server.DataDir, 1000)
 	app := service.NewAppLauncher(cfgMgr, alertStore, logBuffer)
