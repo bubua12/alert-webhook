@@ -272,7 +272,7 @@ export function mountConfig(root, ctx) {
         }
 
         return `
-          <div class="card">
+          <div class="card channel-card">
             <div class="card-header">
               <div class="card-title">
                 <span>${escapeHtml(meta.name)}</span>
@@ -284,7 +284,7 @@ export function mountConfig(root, ctx) {
                 <span class="text-xs text-muted">${enabled ? '已启用' : '未启用'}</span>
               </label>
             </div>
-            <div class="card-body">
+            <div class="card-body channel-card-body">
               <div class="form-group">
                 <label class="form-label" for="notifier-url-${escapeHtml(key)}">
                   <span>Webhook URL</span>
@@ -309,7 +309,7 @@ export function mountConfig(root, ctx) {
                 <strong>接入指引：</strong>${escapeHtml(meta.guide)}
               </div>
 
-              <div class="mt-3" style="display:flex;justify-content:flex-end;">
+              <div class="channel-card-actions">
                 <button type="button" class="btn btn-secondary btn-sm" data-test-notifier="${escapeHtml(key)}" ${testRes?.loading ? 'disabled' : ''}>
                   测试连通性
                 </button>

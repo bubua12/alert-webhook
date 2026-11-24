@@ -31,7 +31,7 @@ export function mountLogs(root, ctx) {
             </div>
 
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;justify-content:flex-end;">
-              <input id="logs-q" class="form-control" style="max-width:260px;min-width:160px;" type="search" placeholder="过滤日志关键词...">
+              <input id="logs-q" class="form-control" style="max-width:210px;min-width:150px;" type="search" placeholder="过滤日志关键词...">
               <select id="logs-limit" class="form-control" style="width:auto;">
                 <option value="100">最近 100 条</option>
                 <option value="200" selected>最近 200 条</option>
@@ -44,13 +44,15 @@ export function mountLogs(root, ctx) {
               </label>
               <button id="logs-pause" class="btn btn-secondary btn-sm" type="button">暂停刷新</button>
               <button id="logs-refresh" class="btn btn-secondary btn-sm" type="button">立即刷新</button>
-              <button id="logs-copy" class="btn btn-ghost btn-sm" type="button">复制日志</button>
             </div>
           </div>
 
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;flex-wrap:wrap;">
             <div id="logs-meta" class="text-xs text-muted mono">加载中...</div>
-            <span id="logs-paused-badge" class="pill pill-warning hidden">已暂停实时更新</span>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span id="logs-paused-badge" class="pill pill-warning hidden">已暂停实时更新</span>
+              <button id="logs-copy" class="btn btn-ghost btn-xs" type="button">复制日志</button>
+            </div>
           </div>
         </div>
       </div>

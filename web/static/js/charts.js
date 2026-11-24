@@ -208,7 +208,7 @@ export function renderSeverityDonut(container, bySeverity = {}) {
   container.innerHTML = `
     <div class="donut-layout">
       <div class="donut-svg-wrap">
-        <svg width="148" height="148" viewBox="0 0 ${size} ${size}" role="img" aria-label="告警级别分布环形图">
+        <svg viewBox="0 0 ${size} ${size}" style="width:100%;height:100%;display:block;" role="img" aria-label="告警级别分布环形图">
           <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--bg-subtle)" stroke-width="${strokeWidth}" />
           ${segmentsHtml}
         </svg>
