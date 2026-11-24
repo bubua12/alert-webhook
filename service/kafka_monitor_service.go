@@ -2,12 +2,16 @@ package service
 
 import (
 	"alert-webhook/config"
+	"alert-webhook/store"
 	"alert-webhook/utils"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +26,13 @@ type KafkaUIResponse struct {
 
 // ConsumerGroupDetail 消费者组详情
 type ConsumerGroupDetail struct {
-	GroupID      string `json:"groupId"`
-	Members      int    `json:"members"`
-	Topics       int    `json:"topics"`
-	Simple       bool   `json:"simple"`
-	State        string `json:"state"`
-	ConsumerLag  int64  `json:"consumerLag"`
-	Coordinator  Coordinator `json:"coordinator"`
+	GroupID     string      `json:"groupId"`
+	Members     int         `json:"members"`
+	Topics      int         `json:"topics"`
+	Simple      bool        `json:"simple"`
+	State       string      `json:"state"`
+	ConsumerLag int64       `json:"consumerLag"`
+	Coordinator Coordinator `json:"coordinator"`
 }
 
 // Coordinator 协调器信息
@@ -38,142 +42,61 @@ type Coordinator struct {
 	Port int    `json:"port"`
 }
 
-// KafkaMonitorService Kafka监控服务
-type KafkaMonitorService struct {
-	config         *config.AppConfig
-	notifiers      map[string]string
-	enabledClients []string
-	stopChan       chan bool
-	wg             sync.WaitGroup
-	httpClient     *http.Client
+// KafkaServiceStatus describes the runtime state of KafkaMonitorService.
+type KafkaServiceStatus struct {
+	Enabled     bool   `json:"enabled"`
+	Running     bool   `json:"running"`
+	Healthy     bool   `json:"healthy"`
+	LastCheck   string `json:"last_check"`
+	LastError   string `json:"last_error"`
+	LaggedLast  int    `json:"lagged_last"`
+	TotalGroups int    `json:"total_groups"`
+	TotalAlerts int64  `json:"total_alerts"`
 }
 
-// NewKafkaMonitorService 创建Kafka监控服务实例
-func NewKafkaMonitorService(cfg *config.AppConfig, notifiers map[string]string, enabledClients []string) *KafkaMonitorService {
-	return &KafkaMonitorService{
-		config:         cfg,
-		notifiers:      notifiers,
-		enabledClients: enabledClients,
-		stopChan:       make(chan bool),
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-	}
-}
+var kafkaHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
-// Start 启动Kafka监控服务
-func (k *KafkaMonitorService) Start() {
-	if !k.config.KafkaMonitor.Enabled {
-		log.Println("Kafka监控功能未启用")
-		return
+// FetchKafkaConsumerGroups queries Kafka UI's consumer-groups endpoint and returns all groups.
+func FetchKafkaConsumerGroups(ctx context.Context, httpClient *http.Client, cfg config.KafkaMonitorConfig) ([]ConsumerGroupDetail, error) {
+	if httpClient == nil {
+		httpClient = kafkaHTTPClient
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.KafkaUIURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("Kafka UI URL 未配置")
+	}
+	clusterName := strings.TrimSpace(cfg.ClusterName)
+	if clusterName == "" {
+		return nil, fmt.Errorf("Kafka 集群名称未配置")
 	}
 
-	log.Printf("启动Kafka监控服务，检查间隔: %d秒", k.config.KafkaMonitor.CheckInterval)
-
-	k.wg.Add(1)
-	go k.monitorKafka()
-}
-
-// Stop 停止Kafka监控服务
-func (k *KafkaMonitorService) Stop() {
-	if !k.config.KafkaMonitor.Enabled {
-		return
-	}
-
-	log.Println("正在停止Kafka监控服务...")
-	close(k.stopChan)
-	k.wg.Wait()
-	log.Println("Kafka监控服务已停止")
-}
-
-// monitorKafka 监控Kafka的主循环
-func (k *KafkaMonitorService) monitorKafka() {
-	defer k.wg.Done()
-
-	ticker := time.NewTicker(time.Duration(k.config.KafkaMonitor.CheckInterval) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			k.checkAndAlert()
-		case <-k.stopChan:
-			return
-		}
-	}
-}
-
-// checkAndAlert 检查Kafka消费者组积压并发送告警
-func (k *KafkaMonitorService) checkAndAlert() {
-	log.Println("开始检查Kafka消费者组积压...")
-
-	// 获取消费者组信息
-	consumerGroups, err := k.fetchConsumerGroups()
-	if err != nil {
-		log.Printf("获取Kafka消费者组信息失败: %v", err)
-		return
-	}
-
-	if len(consumerGroups) == 0 {
-		log.Println("未发现任何消费者组")
-		return
-	}
-
-	// 检查每个消费者组的积压情况
-	var alertGroups []ConsumerGroupDetail
-	for _, group := range consumerGroups {
-		// 跳过忽略的消费者组
-		if k.shouldIgnoreGroup(group.GroupID) {
-			continue
-		}
-
-		// 如果配置了监控列表，只监控列表中的组
-		if len(k.config.KafkaMonitor.MonitoredGroups) > 0 && !k.shouldMonitorGroup(group.GroupID) {
-			continue
-		}
-
-		// 检查是否超过阈值
-		if group.ConsumerLag > k.config.KafkaMonitor.ConsumerLagThreshold {
-			alertGroups = append(alertGroups, group)
-			log.Printf("消费者组 %s 积压告警: %d (阈值: %d)", 
-				group.GroupID, group.ConsumerLag, k.config.KafkaMonitor.ConsumerLagThreshold)
-		}
-	}
-
-	if len(alertGroups) == 0 {
-		log.Println("未发现消费者组积压异常")
-		return
-	}
-
-	log.Printf("发现 %d 个消费者组积压异常", len(alertGroups))
-
-	// 为每个积压的消费者组发送告警
-	for _, group := range alertGroups {
-		k.generateAndSendAlert(group)
-	}
-}
-
-// fetchConsumerGroups 从Kafka UI API获取消费者组信息
-func (k *KafkaMonitorService) fetchConsumerGroups() ([]ConsumerGroupDetail, error) {
-	// 构建API URL
 	apiURL := fmt.Sprintf("%s/api/clusters/%s/consumer-groups/paged?page=1&perPage=100&search=",
-		k.config.KafkaMonitor.KafkaUIURL,
-		k.config.KafkaMonitor.ClusterName)
+		baseURL,
+		url.PathEscape(clusterName),
+	)
 
-	resp, err := k.httpClient.Get(apiURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建 Kafka UI 请求失败: %w", err)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("[Kafka] 关闭响应体失败: %v", err)
+		}
+	}()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
-	}
-
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API返回错误状态码: %d, 响应: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var kafkaResp KafkaUIResponse
@@ -181,23 +104,190 @@ func (k *KafkaMonitorService) fetchConsumerGroups() ([]ConsumerGroupDetail, erro
 		return nil, fmt.Errorf("解析JSON失败: %w", err)
 	}
 
+	if kafkaResp.ConsumerGroups == nil {
+		return []ConsumerGroupDetail{}, nil
+	}
 	return kafkaResp.ConsumerGroups, nil
 }
 
-// shouldIgnoreGroup 检查是否应该忽略该消费者组
-func (k *KafkaMonitorService) shouldIgnoreGroup(groupID string) bool {
-	for _, ignored := range k.config.KafkaMonitor.IgnoredGroups {
-		if groupID == ignored {
+// KafkaMonitorService Kafka监控服务
+type KafkaMonitorService struct {
+	cfgMgr     *config.ConfigManager
+	config     *config.AppConfig
+	alertStore *store.AlertStore
+	stopChan   chan struct{}
+	stopOnce   sync.Once
+	wg         sync.WaitGroup
+	httpClient *http.Client
+
+	statusMu sync.RWMutex
+	status   KafkaServiceStatus
+}
+
+// NewKafkaMonitorService 创建Kafka监控服务实例
+func NewKafkaMonitorService(cfgMgr *config.ConfigManager, cfg *config.AppConfig, alertStore *store.AlertStore) *KafkaMonitorService {
+	enabled := cfg != nil && cfg.KafkaMonitor.Enabled
+	return &KafkaMonitorService{
+		cfgMgr:     cfgMgr,
+		config:     cfg.Clone(),
+		alertStore: alertStore,
+		stopChan:   make(chan struct{}),
+		httpClient: kafkaHTTPClient,
+		status: KafkaServiceStatus{
+			Enabled: enabled,
+			Healthy: enabled,
+		},
+	}
+}
+
+func (k *KafkaMonitorService) currentConfig() *config.AppConfig {
+	if k.cfgMgr != nil {
+		return k.cfgMgr.Get()
+	}
+	return k.config
+}
+
+// Start 启动Kafka监控服务
+func (k *KafkaMonitorService) Start() {
+	cfg := k.currentConfig()
+	if cfg == nil || !cfg.KafkaMonitor.Enabled {
+		log.Println("Kafka监控功能未启用")
+		return
+	}
+
+	interval := cfg.KafkaMonitor.CheckInterval
+	if interval < 5 {
+		log.Printf("[Warn] Kafka监控检查间隔 %d 秒过小，已自动调整为 5 秒", interval)
+		interval = 5
+	}
+
+	k.statusMu.Lock()
+	k.status.Enabled = true
+	k.status.Running = true
+	k.status.Healthy = true
+	k.statusMu.Unlock()
+
+	log.Printf("启动Kafka监控服务，检查间隔: %d秒", interval)
+
+	k.wg.Add(1)
+	go k.monitorKafka(interval)
+}
+
+// Stop 停止Kafka监控服务（幂等，可多次调用）
+func (k *KafkaMonitorService) Stop() {
+	k.stopOnce.Do(func() {
+		log.Println("正在停止Kafka监控服务...")
+		close(k.stopChan)
+		k.wg.Wait()
+		k.statusMu.Lock()
+		k.status.Running = false
+		k.statusMu.Unlock()
+		log.Println("Kafka监控服务已停止")
+	})
+}
+
+// Status returns a snapshot of the Kafka monitor service runtime status.
+func (k *KafkaMonitorService) Status() KafkaServiceStatus {
+	k.statusMu.RLock()
+	defer k.statusMu.RUnlock()
+	return k.status
+}
+
+// CheckNow immediately runs one Kafka consumer-group check and returns updated status.
+func (k *KafkaMonitorService) CheckNow() (KafkaServiceStatus, error) {
+	err := k.checkAndAlert()
+	return k.Status(), err
+}
+
+// monitorKafka 监控Kafka的主循环
+func (k *KafkaMonitorService) monitorKafka(interval int) {
+	defer k.wg.Done()
+
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			_ = k.checkAndAlert()
+		case <-k.stopChan:
+			return
+		}
+	}
+}
+
+// checkAndAlert 检查Kafka消费者组积压并发送告警
+func (k *KafkaMonitorService) checkAndAlert() error {
+	log.Println("开始检查Kafka消费者组积压...")
+	loc := utils.GetShanghaiLocation()
+	nowStr := time.Now().In(loc).Format(time.RFC3339)
+
+	cfg := k.currentConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	consumerGroups, err := FetchKafkaConsumerGroups(ctx, k.httpClient, cfg.KafkaMonitor)
+	if err != nil {
+		log.Printf("获取Kafka消费者组信息失败: %v", err)
+		k.statusMu.Lock()
+		k.status.LastCheck = nowStr
+		k.status.Healthy = false
+		k.status.LastError = err.Error()
+		k.statusMu.Unlock()
+		return err
+	}
+
+	var alertGroups []ConsumerGroupDetail
+	for _, group := range consumerGroups {
+		if shouldIgnoreKafkaGroup(group.GroupID, cfg.KafkaMonitor.IgnoredGroups) {
+			continue
+		}
+		if len(cfg.KafkaMonitor.MonitoredGroups) > 0 && !shouldMonitorKafkaGroup(group.GroupID, cfg.KafkaMonitor.MonitoredGroups) {
+			continue
+		}
+		if group.ConsumerLag > cfg.KafkaMonitor.ConsumerLagThreshold {
+			alertGroups = append(alertGroups, group)
+			log.Printf("消费者组 %s 积压告警: %d (阈值: %d)",
+				group.GroupID, group.ConsumerLag, cfg.KafkaMonitor.ConsumerLagThreshold)
+		}
+	}
+
+	var sentAlerts int64
+	if len(alertGroups) == 0 {
+		log.Println("未发现消费者组积压异常")
+	} else {
+		log.Printf("发现 %d 个消费者组积压异常", len(alertGroups))
+		for _, group := range alertGroups {
+			if k.generateAndSendAlert(cfg, group) {
+				sentAlerts++
+			}
+		}
+	}
+
+	k.statusMu.Lock()
+	k.status.LastCheck = nowStr
+	k.status.Healthy = true
+	k.status.LastError = ""
+	k.status.TotalGroups = len(consumerGroups)
+	k.status.LaggedLast = len(alertGroups)
+	k.status.TotalAlerts += sentAlerts
+	k.statusMu.Unlock()
+
+	return nil
+}
+
+func shouldIgnoreKafkaGroup(groupID string, ignored []string) bool {
+	for _, g := range ignored {
+		if groupID == g {
 			return true
 		}
 	}
 	return false
 }
 
-// shouldMonitorGroup 检查是否应该监控该消费者组
-func (k *KafkaMonitorService) shouldMonitorGroup(groupID string) bool {
-	for _, monitored := range k.config.KafkaMonitor.MonitoredGroups {
-		if groupID == monitored {
+func shouldMonitorKafkaGroup(groupID string, monitored []string) bool {
+	for _, g := range monitored {
+		if groupID == g {
 			return true
 		}
 	}
@@ -205,42 +295,49 @@ func (k *KafkaMonitorService) shouldMonitorGroup(groupID string) bool {
 }
 
 // generateAndSendAlert 生成并发送告警
-func (k *KafkaMonitorService) generateAndSendAlert(group ConsumerGroupDetail) {
-	// 构造告警数据
-	alert := k.createKafkaAlert(group)
-
-	// 构造 template.Data
+func (k *KafkaMonitorService) generateAndSendAlert(cfg *config.AppConfig, group ConsumerGroupDetail) bool {
+	alert := k.createKafkaAlert(cfg, group)
 	data := template.Data{
 		Status: "firing",
 		Alerts: []template.Alert{alert},
 	}
 
-	// 发送到所有启用的客户端
-	var wg sync.WaitGroup
-	for _, client := range k.enabledClients {
-		webhookURL, ok := k.notifiers[client]
-		if !ok {
-			log.Printf("客户端 %s 未配置", client)
-			continue
+	alertName := alert.Labels["alertname"]
+	severity := alert.Labels["severity"]
+	decision := cfg.EvaluateAlertFilter(alertName, severity)
+	if !decision.Allowed {
+		log.Printf("Kafka积压告警 [%s] 被过滤规则拦截: %s", group.GroupID, decision.Reason)
+		if k.alertStore != nil {
+			k.alertStore.Add(BuildAlertRecord("kafka", data, alert, "filtered", decision.Reason, nil))
 		}
-
-		wg.Add(1)
-		go func(client, url string) {
-			defer wg.Done()
-			k.sendAlert(client, url, data)
-		}(client, webhookURL)
+		return false
 	}
-	wg.Wait()
+
+	if len(cfg.Clients) == 0 {
+		log.Printf("[Warn] 发现 Kafka 消费者组 %s 积压，但未启用任何通知渠道，仅记录告警", group.GroupID)
+		if k.alertStore != nil {
+			k.alertStore.Add(BuildAlertRecord("kafka", data, alert, "failed", "", []store.DeliveryResult{{
+				Client:  "system",
+				Success: false,
+				Error:   "未启用任何通知渠道",
+			}}))
+		}
+		return false
+	}
+
+	deliveries := SendToClients(data, cfg.Clients, cfg.NotifierURLMap())
+	deliveryState := ComputeDeliveryState(deliveries)
+	if k.alertStore != nil {
+		k.alertStore.Add(BuildAlertRecord("kafka", data, alert, deliveryState, "", deliveries))
+	}
+	return deliveryState == "sent" || deliveryState == "partial"
 }
 
 // createKafkaAlert 创建Kafka告警对象
-func (k *KafkaMonitorService) createKafkaAlert(group ConsumerGroupDetail) template.Alert {
-	now := time.Now()
-
-	// 生成告警摘要
+func (k *KafkaMonitorService) createKafkaAlert(cfg *config.AppConfig, group ConsumerGroupDetail) template.Alert {
+	now := time.Now().In(utils.GetShanghaiLocation())
 	summary := fmt.Sprintf("Kafka消费者组 %s 积压告警", group.GroupID)
 
-	// 生成详细描述
 	description := fmt.Sprintf(
 		"消费者组积压信息:\n"+
 			"\t• 消费者组ID: %s\n"+
@@ -252,7 +349,7 @@ func (k *KafkaMonitorService) createKafkaAlert(group ConsumerGroupDetail) templa
 			"\t• 协调器: %s:%d",
 		group.GroupID,
 		group.ConsumerLag,
-		k.config.KafkaMonitor.ConsumerLagThreshold,
+		cfg.KafkaMonitor.ConsumerLagThreshold,
 		group.Members,
 		group.Topics,
 		group.State,
@@ -276,69 +373,6 @@ func (k *KafkaMonitorService) createKafkaAlert(group ConsumerGroupDetail) templa
 			"description": description,
 		},
 		StartsAt: now,
-		EndsAt:   time.Time{}, // 空时间表示告警仍在进行中
-	}
-}
-
-// sendAlert 发送告警到指定客户端
-func (k *KafkaMonitorService) sendAlert(client, webhookURL string, data template.Data) {
-	log.Printf("向 %s 发送Kafka积压告警", client)
-
-	// 企业微信需要特殊处理消息长度限制
-	if client == "wechat" {
-		// 将告警分批处理
-		alertBatches := utils.SplitWeChatAlerts(data)
-		log.Printf("[%s] Kafka积压告警分为 %d 批发送", client, len(alertBatches))
-
-		for i, batchData := range alertBatches {
-			message := WeChatMessage{
-				MsgType: "markdown",
-				Markdown: MarkdownMessage{
-					Content: utils.AlertFormatWechat(batchData),
-				},
-			}
-
-			if err := SendAlert(client, webhookURL, message); err != nil {
-				log.Printf("[%s] 第 %d 批Kafka积压告警发送失败: %v", client, i+1, err)
-			} else {
-				log.Printf("[%s] 第 %d 批Kafka积压告警发送成功", client, i+1)
-			}
-
-			// 批次之间添加小延迟
-			if i < len(alertBatches)-1 {
-				time.Sleep(200 * time.Millisecond)
-			}
-		}
-		return
-	}
-
-	// 其他客户端正常处理
-	var message interface{}
-
-	switch client {
-	case "dingtalk":
-		message = DingTalkMessage{
-			MsgType: "markdown",
-			Markdown: DingTalkMarkdown{
-				Title: "Kafka消费者组积压告警",
-				Text:  utils.AlertFormatDingtalk(data),
-			},
-		}
-	case "feishu":
-		message = FeishuMessage{
-			MsgType: "text",
-			Content: FeishuContent{
-				Text: utils.AlertFormatFeishu(data),
-			},
-		}
-	default:
-		log.Printf("未知客户端类型: %s", client)
-		return
-	}
-
-	if err := SendAlert(client, webhookURL, message); err != nil {
-		log.Printf("[%s] Kafka积压告警发送失败: %v", client, err)
-	} else {
-		log.Printf("[%s] Kafka积压告警发送成功", client)
+		EndsAt:   time.Time{},
 	}
 }

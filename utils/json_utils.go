@@ -46,3 +46,49 @@ func IsValidJSON(data string) bool {
 func ParseJSON(data string, target interface{}) error {
 	return json.Unmarshal([]byte(data), target)
 }
+
+// NotifierAPIResponse represents common response fields from WeChat, DingTalk, and Feishu webhooks.
+type NotifierAPIResponse struct {
+	ErrCode       *int   `json:"errcode"`
+	ErrMsg        string `json:"errmsg"`
+	Code          *int   `json:"code"`
+	Msg           string `json:"msg"`
+	StatusCode    *int   `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
+}
+
+// ValidateWebhookResponse verifies both HTTP 2xx status and platform-specific JSON error codes.
+func ValidateWebhookResponse(client string, statusCode int, body []byte) error {
+	if statusCode < 200 || statusCode >= 300 {
+		return fmt.Errorf("[%s] 返回错误状态码: %d, 响应: %s", client, statusCode, string(body))
+	}
+
+	if len(body) == 0 {
+		return nil
+	}
+
+	var parsed NotifierAPIResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		// Non-JSON 2xx responses (e.g. custom webhook proxies) are allowed.
+		return nil
+	}
+
+	switch client {
+	case "wechat", "dingtalk":
+		if parsed.ErrCode != nil && *parsed.ErrCode != 0 {
+			return fmt.Errorf("[%s] 接口返回错误 errcode=%d, errmsg=%s", client, *parsed.ErrCode, parsed.ErrMsg)
+		}
+	case "feishu":
+		if parsed.Code != nil && *parsed.Code != 0 {
+			return fmt.Errorf("[%s] 接口返回错误 code=%d, msg=%s", client, *parsed.Code, parsed.Msg)
+		}
+		if parsed.StatusCode != nil && *parsed.StatusCode != 0 {
+			return fmt.Errorf("[%s] 接口返回错误 StatusCode=%d, StatusMessage=%s", client, *parsed.StatusCode, parsed.StatusMessage)
+		}
+		if parsed.ErrCode != nil && *parsed.ErrCode != 0 {
+			return fmt.Errorf("[%s] 接口返回错误 errcode=%d, errmsg=%s", client, *parsed.ErrCode, parsed.ErrMsg)
+		}
+	}
+
+	return nil
+}
