@@ -1,5 +1,5 @@
-<h1 align="center">🔔 Alertmanager Webhook Notifier</h1>
-<p align="center">将 Prometheus Alertmanager、ClickHouse 流量异常与 Kafka 消费积压告警推送至企业微信 / 钉钉 / 飞书，并内置可视化 Web 运维控制台</p>
+<h1 align="center">Alertmanager Webhook Notifier</h1>
+<p align="center">面向运维与研发的告警路由转发中心：接收 Prometheus Alertmanager Webhook，巡检 ClickHouse 大流量与 Kafka 消费积压，并发推送至企业微信 / 钉钉 / 飞书，内置零依赖 Web 运维控制台</p>
 <p align="center">
   <img src="https://img.shields.io/badge/Version-v1.2.0-brightgreen.svg" alt="Version">
   <img src="https://img.shields.io/badge/Go-1.24-blue.svg" alt="Go Version">
@@ -10,210 +10,658 @@
 
 ---
 
-## ✨ 项目简介 & v1.2.0 亮点
+## 目录
 
-本项目是一个轻量高性能的告警转发与监控服务，基于 **Go 1.24 + Gin** 构建，统一接收 Prometheus Alertmanager Webhook，并内置基于 ClickHouse 的 Nginx 大流量异常检测与基于 Kafka UI 的消费者组积压监控。
-
-### 🆕 v1.2.0 核心升级
-
-- 🖥️ **内置可视化 Web 控制台**（零外部 CDN 依赖，纯离线可用，支持浅色 / 深色主题）：
-  - **监控总览**：24 小时告警时间线、严重级别分布、通道投递健康度、ClickHouse/Kafka 服务状态与一键触发检测。
-  - **告警记录审计**：支持按告警状态、投递结果、告警来源、级别与关键词分页查询，点击行展开详情抽屉（Labels、Annotations、过滤原因及各渠道响应耗时），支持导出 JSON 与清空记录。
-  - **可视化配置中心与热更新**：企业微信 / 钉钉 / 飞书卡片式配置与在线连通性测试；通配符过滤规则编辑器与实时命中测试；ClickHouse / Kafka UI 连接探测与阈值可视化配置；YAML 原生编辑与导入导出，保存后原子落盘并立即热生效。
-  - **调试沙箱**：内置常见告警场景模板，支持 **预览渲染（Dry Run）** 查看三平台消息效果，或 **真实发送测试** 联调推送链路。
-  - **实时运行日志**：按 `INFO` / `WARN` / `ERROR` 级别过滤与关键词检索，实时查看服务运行日志。
-- 🚀 **零配置友好启动与环境变量覆盖**：即使缺少或留空 `config.yaml`（甚至未配置任何通知渠道），服务依然可正常启动并在控制台引导完成初始化；支持通过 `ALERT_WEBHOOK_*` 环境变量灵活注入或覆盖配置。
-- 🐳 **开箱即用的 Docker / Docker Compose 部署**：提供多阶段 Alpine 非 root 容器镜像，内置 `tzdata`（默认 `Asia/Shanghai`）、`/healthz` 健康检查与标准输出日志（适配 `docker logs`）。
+- [1. 系统定位与架构](#1-系统定位与架构)
+  - [1.1 核心处理链路](#11-核心处理链路)
+  - [1.2 目录与模块职责](#12-目录与模块职责)
+- [2. 部署指南](#2-部署指南)
+  - [2.1 Docker Compose 标准部署（推荐）](#21-docker-compose-标准部署推荐)
+  - [2.2 离线 / 无 Docker Hub 环境部署](#22-离线--无-docker-hub-环境部署)
+  - [2.3 接入已有 Prometheus / Alertmanager 容器网络](#23-接入已有-prometheus--alertmanager-容器网络)
+  - [2.4 Kubernetes 部署示例](#24-kubernetes-部署示例)
+  - [2.5 源码 / 二进制与 Systemd 部署](#25-源码--二进制与-systemd-部署)
+  - [2.6 从 v1.0 / v1.1 二进制迁移到 v1.2 Docker](#26-从-v10--v11-二进制迁移到-v12-docker)
+  - [2.7 Nginx HTTPS 反向代理示例](#27-nginx-https-反向代理示例)
+- [3. 通知渠道接入与消息机制](#3-通知渠道接入与消息机制)
+  - [3.1 三平台接入与安全限制](#31-三平台接入与安全限制)
+  - [3.2 告警级别映射、配色与时区](#32-告警级别映射配色与时区)
+  - [3.3 HTTP 200 静默失败校验](#33-http-200-静默失败校验)
+  - [3.4 实际推送消息格式示例](#34-实际推送消息格式示例)
+- [4. 配置系统与过滤规则详解](#4-配置系统与过滤规则详解)
+  - [4.1 加载优先级与热更新边界](#41-加载优先级与热更新边界)
+  - [4.2 完整配置字段手册](#42-完整配置字段手册)
+  - [4.3 环境变量一览表](#43-环境变量一览表)
+  - [4.4 过滤规则执行顺序与真值表](#44-过滤规则执行顺序与真值表)
+- [5. ClickHouse 大流量监控与 Kafka UI 巡检原理](#5-clickhouse-大流量监控与-kafka-ui-巡检原理)
+  - [5.1 ClickHouse 大流量异常检测](#51-clickhouse-大流量异常检测)
+  - [5.2 Kafka UI 消费者组积压监控](#52-kafka-ui-消费者组积压监控)
+- [6. Web 控制台与安全认证](#6-web-控制台与安全认证)
+- [7. REST API 完整参考](#7-rest-api-完整参考)
+  - [7.1 公开端点与控制面端点总览](#71-公开端点与控制面端点总览)
+  - [7.2 高频接口请求示例](#72-高频接口请求示例)
+- [8. 日志、持久化与生产排障手册](#8-日志持久化与生产排障手册)
+  - [8.1 日志与存储明细](#81-日志与存储明细)
+  - [8.2 生产排障速查表](#82-生产排障速查表)
+- [9. 本地开发与二次开发指南](#9-本地开发与二次开发指南)
+  - [9.1 构建与测试命令](#91-构建与测试命令)
+  - [9.2 扩展新的通知渠道 Checklist](#92-扩展新的通知渠道-checklist)
+- [10. 更新日志与开源协议](#10-更新日志与开源协议)
 
 ---
 
-## 🌟 核心能力一览
+## 1. 系统定位与架构
 
-| 模块 | 能力说明 |
-| :--- | :--- |
-| **多平台并发推送** | 支持企业微信（Markdown + 超长 4096 字节自动分批）、钉钉（Markdown）、飞书（文本），校验平台业务返回码（`errcode`/`code`） |
-| **智能告警过滤** | 支持 `alert_name` 与 `severity` 双维度 `include` / `exclude` 与 `*` 通配符（`exclude` 优先） |
-| **Nginx 大流量监控** | 定时查询 ClickHouse `nginx_access` 日志，按域名与路径聚合检测超大请求 / 超大响应异常 |
-| **Kafka 消费积压监控** | 通过 Kafka UI API 定时巡检消费组 Lag，支持指定监控名单或忽略名单 |
-| **可视化运维台** | 单二进制内嵌前端静态资源（`embed.FS`），同一端口（默认 `18082`）提供告警接收与 Web 控制台 |
+本项目基于 **Go 1.24 + Gin** 构建，将告警接收、自主巡检、规则过滤、多平台消息格式适配与离线 Web 运维台打包进单一静态可执行文件（通过 `go:embed` 内嵌静态资源，并内置 `time/tzdata` 避免精简容器缺时区库）：
+
+- **三路告警输入**：Prometheus Alertmanager Webhook（`POST /webhook-alert`）、ClickHouse Nginx 大流量定时巡检、Kafka UI 消费者组积压定时巡检。
+- **零配置引导与在线热更新**：支持空配置或 0 个渠道平滑启动；除监听地址和数据/日志目录外，所有通知渠道、过滤规则及巡检参数在 Web 控制台保存后立即原子落盘并热生效。
+- **完整可观测闭环**：内存保留最近 1000 条告警审计（并持久化到 `alerts.jsonl`）与最近 500 条日志，同时提供各平台业务返回码（`errcode`/`code`）校验、模拟沙箱与连通性自检接口。
+
+### 1.1 核心处理链路
+
+```mermaid
+flowchart LR
+    AM["Prometheus Alertmanager - POST /webhook-alert"] --> Handler["GinAlertHandler"]
+    CH["ClickHouse nginx_access - TrafficAlertService"] --> Filter["规则过滤引擎 EvaluateAlertFilter"]
+    KF["Kafka UI API - KafkaMonitorService"] --> Filter
+    Handler --> Filter
+
+    Cfg["ConfigManager - YAML + ENV 覆盖 + 热重载"] -.-> Filter
+    Cfg -.-> Sender
+
+    Filter -- "命中 exclude / none / 未命中 include" --> Drop["记录为 filtered 跳过外发"]
+    Filter -- "放行" --> Format["格式适配与分批 WeChat 4000B / DingTalk / Feishu"]
+    Format --> Sender["并发推送器 10s超时 + JSON业务码校验"]
+
+    Sender --> Store["AlertStore 内存1000条 + alerts.jsonl"]
+    Drop --> Store
+    UI["Web 控制台 /api/* go:embed 静态资源"] <--> Store
+    UI <--> Cfg
+    UI <-- "LogBuffer 500条" --> Logs["stdout + lumberjack 轮转文件"]
+```
+
+### 1.2 目录与模块职责
+
+| 路径 | 核心文件 / 包 | 职责说明 |
+| :--- | :--- | :--- |
+| `main.go` | `main` | 解析 `-config` 与 `ALERT_WEBHOOK_CONFIG`，初始化多路日志（`stdout` + 文件 + `LogBuffer`），注册 `web.StaticFS()` 并启动服务 |
+| `config/` | `webhook_config.go`, `manager.go`, `init_webhook.go` | 配置结构体、默认值、17 个环境变量覆盖、校验器、通配符过滤引擎、线程安全 `ConfigManager` 与原子落盘 |
+| `store/` | `alert_store.go`, `log_buffer.go` | 1000 条告警环形缓冲 + JSONL 持久化 + 24 小时时间线聚合统计；500 条日志环形缓冲与级别分类 |
+| `service/` | `server_manager.go`, `api_handler.go` | Gin 路由、可选 `auth_token` 中间件、`/healthz` `/readyz`、15 个 `/api/*` 控制面端点、5 秒优雅停机 |
+| `service/` | `alertmanager_handler.go`, `webhook_sender.go` | Webhook 接收、按通道并发推送、企业微信分批、10 秒 HTTP 超时、企微/钉钉/飞书业务错误码校验 |
+| `service/` | `service_manager.go`, `clickhouse_service.go`, `traffic_alert_service.go`, `kafka_monitor_service.go`, `app_launcher.go` | 后台巡检生命周期管理与热重载、ClickHouse SQL 安全拼接与 15 秒超时控制、Kafka UI 消费组拉取 |
+| `utils/` | `alert_formater.go`, `json_utils.go` | 东八区时间转换（带 `UTC+8` 兜底）、三平台文本/Markdown 渲染、WeChat 4000B 动态分批、返回码解析 |
+| `web/` | `embed.go`, `static/index.html`, `static/css/*`, `static/js/**` | 零外部 CDN 依赖的原生 ES6 Web 控制台，编译时直接嵌入二进制 |
+| 部署文件 | [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml), [.env.example](.env.example), [Makefile](Makefile) | 多阶段非 root Alpine 镜像、Compose 编排、环境变量模板与快捷构建脚本 |
 
 ---
 
-## 📦 快速开始
+## 2. 部署指南
 
-### 方式一：Docker Compose 一键部署（推荐）
+### 2.1 Docker Compose 标准部署（推荐）
+
+适用于可访问 Docker Hub 的常规服务器或本地环境：
 
 ```bash
-# 1. 克隆仓库
+# 1. 克隆仓库并进入目录
 git clone https://github.com/bubua12/alert-webhook.git
 cd alert-webhook
 
-# 2. （可选）准备环境变量文件（端口、API Token、Webhook URL 等）
+# 2. 按需复制环境变量（可选，用于注入 AUTH_TOKEN 或各渠道 Webhook URL）
 cp .env.example .env
 
-# 3. （可选）准备初始配置文件；若省略此步，首次启动会自动在 ./conf/config.yaml 生成默认配置
+# 3. 准备宿主机持久化目录（可选；如不提前放 config.yaml，首次启动会自动生成默认配置）
 mkdir -p conf data logs
 cp config-example.yaml conf/config.yaml
 
-# 4. 启动服务（自动创建宿主机目录、构建镜像并后台启动）
-make docker-up
-# 或直接执行：
-# mkdir -p conf data logs && docker compose up -d --build
+# 4. 构建并后台启动（等价于 make docker-up）
+docker compose up -d --build
 
-# 5. 查看运行日志与健康状态
-make docker-logs
-curl http://localhost:18082/healthz
+# 5. 验证健康状态与日志
+curl -s http://127.0.0.1:18082/healthz
+docker compose logs -f
 ```
 
-启动成功后，浏览器访问 `http://localhost:18082` 即可进入 Web 控制台完成通知渠道配置与联调测试。
+**两个关键工程细节：**
 
-> **💡 为什么挂载 `./conf:/app/config` 目录（而不是单文件 `./config.yaml` 或 `./config`）？**
-> 1. 仓库根目录下的 `./config/` 是 Go 源码包目录（存放 `config/*.go`），宿主机使用 `./conf` 目录可彻底避免与源码目录混淆；
-> 2. 若宿主机尚不存在 `config.yaml` 而直接挂载单文件，Docker 会自动创建一个同名空目录，导致程序读取文件失败；
-> 3. 挂载目录后，容器内 Web 控制台在执行配置热更新时可通过「写临时文件 + 原子 `rename`」安全保存，避免单文件挂载触发 `EBUSY` 错误。
+1. **为什么挂载 `./conf:/app/config` 目录，而不是单文件或 `./config`？**
+   - 仓库根目录下的 `./config/` 是 Go 源码包目录（存放 `config/*.go`），宿主机挂载 `./conf` 可避免与源码目录混杂。
+   - 若宿主机尚未创建 `config.yaml` 就直接挂载 `-v ./config.yaml:/app/config/config.yaml`，Docker 会自动建出一个同名空目录导致进程读文件失败。
+   - 在 Web 控制台修改配置热保存时，后端采用「写同目录临时文件 + `fsync` + `os.Rename`」原子替换；单文件 bind mount 在部分内核下会触发 `EBUSY`/`EXDEV`（尽管代码已内置 `os.WriteFile` 降级兜底，挂载目录仍是最稳妥的做法）。
+2. **Linux 非 root 挂载目录权限**：
+   [Dockerfile](Dockerfile) 中默认创建并切换至 `appuser`（Alpine 下默认为 UID `100` / GID `101`）。如果宿主机通过 root 预先创建了 `./conf`、`./data`、`./logs` 且容器日志出现 `permission denied`，执行一次赋权即可：
+   ```bash
+   chown -R 100:101 conf data logs
+   docker compose restart
+   ```
 
-> **🐧 Linux 宿主机权限提示**：容器默认以非 root 用户 `appuser`（UID `100` / GID `101`）运行。若在 Linux 宿主机遇到 `./conf`、 `./data` 或 `./logs` 写入权限错误，可执行 `chown -R 100:101 conf data logs` 后重启容器。
+### 2.2 离线 / 无 Docker Hub 环境部署
 
-### 方式二：Docker CLI 运行
+当生产服务器处于内网、无法拉取 `golang:1.24-alpine` 或 `alpine:3.21` 基础镜像时，直接在有 Go 环境的开发机静态交叉编译，再在目标服务器用 `FROM scratch` 打包运行（仅约 26MB，二进制已内嵌 Web 控制台与 `time/tzdata`）：
+
+**第一步：在本地开发机静态编译**
 
 ```bash
-# 1. 构建镜像
-docker build -t alert-webhook:latest .
-
-# 2. 准备持久化目录
-mkdir -p conf data logs
-
-# 3. 运行容器（可通过 -e 直接注入通知渠道，无需提前准备 config.yaml）
-docker run -d \
-  --name alert-webhook \
-  --restart unless-stopped \
-  -p 18082:18082 \
-  -e TZ=Asia/Shanghai \
-  -e ALERT_WEBHOOK_WECHAT_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx" \
-  -v "$(pwd)/conf:/app/config" \
-  -v "$(pwd)/data:/app/data" \
-  -v "$(pwd)/logs:/app/logs" \
-  alert-webhook:latest
+# 目标机为 x86_64 Linux（若为 ARM64 服务器则改 GOARCH=arm64）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o alert-webhook .
 ```
 
-### 方式三：源码 / 二进制启动
+**第二步：在目标服务器准备目录、CA 证书与编排文件**
 
-要求 **Go 1.24+**。
+> ⚠️ **必须使用 `cp -L` 解引用复制 CA 证书**：RHEL/Rocky/CentOS 的 `/etc/pki/tls/certs/ca-bundle.crt` 是软链接，直接 `COPY` 进 `FROM scratch` 会失效并导致推送企业微信/钉钉/飞书时报 HTTPS 证书错误。
 
 ```bash
-# 1. 编译二进制（自动内嵌 web/static 前端资源）
-make build
-# 或交叉编译 Linux amd64 版本：
-# CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o alert-webhook .
+mkdir -p /data/alert-webhook/{conf,data,logs}
+cd /data/alert-webhook
 
-# 2. 准备配置（可选，省略时启动自动生成默认 ./config.yaml）
-cp config-example.yaml config.yaml
+# 上传第一步编译好的 alert-webhook 二进制到 /data/alert-webhook/alert-webhook 并赋权
+chmod +x /data/alert-webhook/alert-webhook
 
-# 3. 启动服务
-./alert-webhook
-# 或指定配置文件路径：
-# ./alert-webhook -config=/path/to/config.yaml
+# 复制宿主机 CA 证书（Rocky/RHEL/CentOS 路径；Debian/Ubuntu 请改用 /etc/ssl/certs/ca-certificates.crt）
+cp -L /etc/pki/tls/certs/ca-bundle.crt /data/alert-webhook/ca-certificates.crt
 
-# 开发模式直接运行与测试
-make run
-make test
-make test-race
+# 写入离线 Dockerfile
+cat <<'EOF' > /data/alert-webhook/Dockerfile
+FROM scratch
+COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY alert-webhook /app/alert-webhook
+WORKDIR /app
+EXPOSE 18082
+ENV TZ=Asia/Shanghai \
+    ALERT_WEBHOOK_CONFIG=/app/config/config.yaml \
+    ALERT_WEBHOOK_DATA_DIR=/app/data \
+    ALERT_WEBHOOK_LOG_DIR=/app/logs
+ENTRYPOINT ["/app/alert-webhook"]
+EOF
+
+cat <<'EOF' > /data/alert-webhook/.dockerignore
+conf
+data
+logs
+backup-*
+EOF
+
+cat <<'EOF' > /data/alert-webhook/docker-compose.yml
+services:
+  alert-webhook:
+    build: .
+    image: alert-webhook:v1.2.0
+    container_name: alert-webhook
+    restart: unless-stopped
+    ports:
+      - "18082:18082"
+    environment:
+      TZ: Asia/Shanghai
+      ALERT_WEBHOOK_CONFIG: /app/config/config.yaml
+      ALERT_WEBHOOK_DATA_DIR: /app/data
+      ALERT_WEBHOOK_LOG_DIR: /app/logs
+    volumes:
+      - ./conf:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+EOF
+
+docker compose up -d --build
 ```
 
-如习惯传统后台脚本启停，也可继续使用项目自带脚本：
+### 2.3 接入已有 Prometheus / Alertmanager 容器网络
 
-```bash
-chmod +x scripts/start.sh scripts/stop.sh
-./scripts/start.sh
-./scripts/stop.sh
-```
-
----
-
-## 🖥️ Web 控制台使用说明
-
-服务启动后，在浏览器打开 **`http://localhost:18082`**（如需关闭 Web 界面，可在配置中设置 `server.ui_enabled: false`）：
-
-1. **安全认证（可选）**：若设置了 `server.auth_token` 或环境变量 `ALERT_WEBHOOK_AUTH_TOKEN`，控制台会在首次访问 `/api/*` 时弹出 Token 解锁弹窗，验证后保存在浏览器 `localStorage`。`/webhook-alert`、`/healthz`、`/readyz` 与静态资源不受 Token 限制，确保 Alertmanager 与探针正常接入。
-2. **监控总览**：查看累计告警、推送成功率、24 小时趋势图、通道平均延迟，并可查看与手动触发 ClickHouse 大流量检测或 Kafka 积压检测。
-3. **告警记录**：筛选排查所有收到的告警（包括被过滤规则拦截的记录），展开详情查看每条消息的标签、注释与各平台投递明细。
-4. **配置中心**：
-   - 在「通知渠道」填写 Webhook URL 后可直接点击 **测试连通性** 验证再保存；
-   - 在「过滤规则」通过标签选择器编辑 `include` / `exclude` 并使用内嵌规则测试器验证；
-   - 在「服务与 YAML」支持可视化切换原始 YAML、导入/导出配置或一键生成 `alertmanager.yml` 片段；
-   - 修改 `server.port` 需重启进程生效，其余通知渠道、过滤规则、ClickHouse、Kafka 监控均支持 **保存并热生效**。
-5. **调试沙箱**：选择预设告警模板，支持先 **Dry Run 预览** 三平台文案，再 **真实发送测试**。
-6. **运行日志**：在线查看最近 500 条运行日志，支持按级别和关键词筛选。
-
----
-
-## 🔗 Alertmanager 集成配置
-
-在 Prometheus Alertmanager 的 `alertmanager.yml` 中添加 Webhook 接收器：
+如果服务器已经通过另一个 `docker-compose.yml`（例如 `prometheus-stack`）运行了 Prometheus 和 Alertmanager，可以让 `alert-webhook` 加入同一外部桥接网络，直接通过容器服务名通信，避免走宿主机公网/局域网回环：
 
 ```yaml
+# 在 alert-webhook 的 docker-compose.yml 中追加网络配置
+services:
+  alert-webhook:
+    # ... 其余配置同上 ...
+    networks:
+      - default
+      - monitor
+
+networks:
+  monitor:
+    external: true
+    name: prometheus-stack_monitor   # 用 docker network ls 查看实际的 bridge 网络名
+```
+
+对应的 Alertmanager `alertmanager.yml` 配置：
+
+```yaml
+global:
+  resolve_timeout: 5m
+
 route:
-  group_by: ['alertname']
-  group_wait: 10s
-  group_interval: 10s
+  group_by: ['alertname', 'instance']
+  group_wait: 30s
+  group_interval: 5m
   repeat_interval: 1h
   receiver: 'webhook-notifier'
 
 receivers:
   - name: 'webhook-notifier'
     webhook_configs:
-      # 宿主机或跨机器访问：
-      - url: 'http://your-server-ip:18082/webhook-alert'
-      # 若与 Alertmanager 同处一个 Docker Compose 网络，可使用服务名：
-      # - url: 'http://alert-webhook:18082/webhook-alert'
+      # 同 Docker 网络时可直接填容器名或服务名：
+      - url: 'http://alert-webhook:18082/webhook-alert'
+      # 若跨主机或走宿主机端口，则填写宿主机内网 IP：
+      # - url: 'http://192.168.31.120:18082/webhook-alert'
         send_resolved: true
+```
+
+### 2.4 Kubernetes 部署示例
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alert-webhook-secret
+  namespace: monitoring
+type: Opaque
+stringData:
+  ALERT_WEBHOOK_AUTH_TOKEN: "replace-with-strong-token"
+  ALERT_WEBHOOK_WECHAT_URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=replace-me"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-webhook-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    server:
+      port: "0.0.0.0:18082"
+      ui_enabled: true
+      data_dir: "/app/data"
+      log_dir: "/app/logs"
+    client:
+      - wechat
+    filter:
+      severity:
+        exclude: ["info", "none"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-webhook
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-webhook
+  template:
+    metadata:
+      labels:
+        app: alert-webhook
+    spec:
+      containers:
+        - name: alert-webhook
+          image: alert-webhook:v1.2.0
+          ports:
+            - containerPort: 18082
+          envFrom:
+            - secretRef:
+                name: alert-webhook-secret
+          env:
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: ALERT_WEBHOOK_CONFIG
+              value: "/app/config/config.yaml"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 18082
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 18082
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: alert-webhook-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-webhook
+  namespace: monitoring
+spec:
+  selector:
+    app: alert-webhook
+  ports:
+    - name: http
+      port: 18082
+      targetPort: 18082
+```
+
+> 提示：在 Kubernetes 中若将 `ConfigMap` 只读挂载到 `/app/config`，环境变量覆盖仍然生效；如需从 Web 控制台持久化写回 `config.yaml`，请改用 `PersistentVolumeClaim` 挂载 `/app/config` 与 `/app/data`。
+
+### 2.5 源码 / 二进制与 Systemd 部署
+
+要求 **Go 1.24+**（修改前端静态文件无需 Node 打包，Go 编译时自动嵌入）：
+
+```bash
+# 本地编译（自动嵌入 web/static 与 time/tzdata）
+make build
+
+# 指定配置启动（省略 -config 时依次读取 ALERT_WEBHOOK_CONFIG 或 ./config.yaml）
+./alert-webhook -config=/etc/alert-webhook/config.yaml
+```
+
+Systemd 托管示例（`/etc/systemd/system/alert-webhook.service`）：
+
+```ini
+[Unit]
+Description=Alert Webhook Notifier
+After=network.target
+
+[Service]
+Type=simple
+User=alert-webhook
+WorkingDirectory=/opt/alert-webhook
+Environment=ALERT_WEBHOOK_CONFIG=/opt/alert-webhook/config.yaml
+ExecStart=/opt/alert-webhook/alert-webhook
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 2.6 从 v1.0 / v1.1 二进制迁移到 v1.2 Docker
+
+v1.2.0 **100% 兼容** v1.0/v1.1 的 `config.yaml` 字段，迁移只需 4 步：
+
+```bash
+cd /data/alert-webhook
+# 1. 停止旧进程（如有）并备份旧文件
+./stop.sh 2>/dev/null || true
+mkdir -p backup-v1 conf data logs
+mv alert-webhook start.sh stop.sh alert-webhook.pid backup-v1/ 2>/dev/null || true
+
+# 2. 原样保留旧版生产 config.yaml 到 conf/ 目录
+cp -a config.yaml backup-v1/config.yaml
+mv config.yaml conf/config.yaml
+
+# 3. 放入仓库的 Dockerfile/.dockerignore/docker-compose.yml（或离线方式），构建并启动
+docker compose up -d --build
+
+# 4. 验证原配置已生效
+curl -s http://127.0.0.1:18082/readyz
+```
+
+### 2.7 Nginx HTTPS 反向代理示例
+
+若需将 Web 控制台暴露到公网或办公网统一域名下，强烈建议配合 Nginx TLS + `ALERT_WEBHOOK_AUTH_TOKEN` 使用：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name alert.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/alert.example.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/alert.example.com.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:18082;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 ```
 
 ---
 
-## ⚙️ 配置文件与环境变量一览
+## 3. 通知渠道接入与消息机制
 
-完整配置模板请参考 [config-example.yaml](config-example.yaml)（Kafka 专项示例见 [config-kafka-example.yaml](config-kafka-example.yaml)），环境变量模板见 [.env.example](.env.example)。
+### 3.1 三平台接入与安全限制
 
-### 环境变量一览表
+| 平台 | Webhook URL 格式 | 消息格式 | 必须注意的平台规则 |
+| :--- | :--- | :--- | :--- |
+| **企业微信 (`wechat`)** | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<key>` | `markdown` | 单条消息上限 **4096 字节**，程序按 **4000 字节**安全上限自动拆分多条告警并间隔 `200ms` 顺序发送（若单条告警本身超 4000 字节，仍会单独尝试投递）。企业微信群机器人官方限频约 20 条/分钟。 |
+| **钉钉 (`dingtalk`)** | `https://oapi.dingtalk.com/robot/send?access_token=<token>` | `markdown` | 钉钉机器人强制要求至少启用一种安全设置。**本程序当前仅传 Webhook URL（未实现加签逻辑）**，请在钉钉群机器人安全设置中选择 **「自定义关键字」**（例如填入 `Prometheus` 或 `告警`）或 **「IP 地址（段）」白名单**；否则会返回 `errcode=310000`。 |
+| **飞书 (`feishu`)** | `https://open.feishu.cn/open-apis/bot/v2/hook/<token>` | `text` | 与钉钉同理，若飞书机器人启用了安全校验，请配置 **「自定义关键词」**（如 `Prometheus`、`告警`）或 **「IP 白名单」**（目前暂未实现签名校验）。 |
 
-> 当设置了下表中非空环境变量时，将覆盖配置文件中的对应字段；在 Web 控制台「配置中心」顶部会展示当前生效的环境变量覆盖项提示。其中设置 `ALERT_WEBHOOK_*_URL` 时会自动填充对应 `notifiers.<client>.webhook_url` 并确保该渠道处于启用状态。
+### 3.2 告警级别映射、配色与时区
 
-| 环境变量 | 默认值 / 容器默认值 | 说明 |
-| :--- | :--- | :--- |
-| `ALERT_WEBHOOK_HOST_PORT` | `18082` | 仅 Docker Compose 使用：映射到容器 `18082` 端口的宿主机端口 |
-| `ALERT_WEBHOOK_CONFIG` | `./config.yaml`（容器 `/app/config/config.yaml`） | 配置文件路径（优先级低于命令行 `-config` 参数） |
-| `ALERT_WEBHOOK_PORT` | `0.0.0.0:18082` | HTTP 服务监听地址 |
-| `ALERT_WEBHOOK_AUTH_TOKEN` | `""` | `/api/*` 管理接口鉴权 Token（支持 `Bearer` 或 `X-API-Token`） |
-| `ALERT_WEBHOOK_DATA_DIR` | `./data`（容器 `/app/data`） | 告警审计历史文件 `alerts.jsonl` 存储目录 |
-| `ALERT_WEBHOOK_LOG_DIR` | `./logs`（容器 `/app/logs`） | 滚动日志文件目录（日志同时输出至 `stdout`） |
-| `ALERT_WEBHOOK_WECHAT_URL` | `""` | 企业微信群机器人 Webhook URL |
-| `ALERT_WEBHOOK_DINGTALK_URL` | `""` | 钉钉群机器人 Webhook URL |
-| `ALERT_WEBHOOK_FEISHU_URL` | `""` | 飞书群机器人 Webhook URL |
-| `ALERT_WEBHOOK_CLICKHOUSE_HOST` | `""` | ClickHouse 主机地址 |
-| `ALERT_WEBHOOK_CLICKHOUSE_PORT` | `""` | ClickHouse Native 端口（通常为 `9000`） |
-| `ALERT_WEBHOOK_CLICKHOUSE_DB` | `""` | ClickHouse 数据库名（默认 `nginxlogs`） |
-| `ALERT_WEBHOOK_CLICKHOUSE_USER` | `""` | ClickHouse 用户名 |
-| `ALERT_WEBHOOK_CLICKHOUSE_PASSWORD` | `""` | ClickHouse 密码 |
-| `ALERT_WEBHOOK_TRAFFIC_ENABLED` | `""` | 是否启用大流量告警（`true` / `false`） |
-| `ALERT_WEBHOOK_KAFKA_ENABLED` | `""` | 是否启用 Kafka 积压监控（`true` / `false`） |
-| `ALERT_WEBHOOK_KAFKA_UI_URL` | `""` | Kafka UI 访问地址（不含路径，如 `http://localhost:8090`） |
-| `ALERT_WEBHOOK_KAFKA_CLUSTER` | `""` | Kafka UI 中配置的集群名称 |
-| `TZ` | `Asia/Shanghai` | 容器与时间格式化时区 |
+- **时间统一转换**：无论上游 Alertmanager 发送的是 UTC 还是其他时区时间，所有格式器均调用 `utils.GetShanghaiLocation()` 转换为 `Asia/Shanghai`（`2006-01-02 15:04:05`）；若运行环境缺失系统 tzdata，自动兜底使用固定 `UTC+8`（`CST`），不会 panic。
+- **企业微信标题颜色**：当同一批次包含多条告警时，取本批最高优先级级别（`emergency > critical > warning > info`）决定标题颜色。
+
+| 原始 `severity` 标签 | 渲染展示级别 | 企业微信颜色 | 钉钉颜色 |
+| :--- | :--- | :--- | :--- |
+| `emergency` | `P0` | `red` | `#FF0000` |
+| `critical` | `P1` | `red` | `#FF7F0E` |
+| `warning` | `P2` | `warning` | `#FFD700` |
+| `info` | `P3` | `comment` | `comment` |
+| 其他值（如 `high`） | 原样输出 | `black` | `black` |
+
+### 3.3 HTTP 200 静默失败校验
+
+企业微信、钉钉和飞书在发生参数错误、密钥失效、关键字未命中或限流时，**经常依然返回 HTTP 200 状态码**并在 JSON 响应体中携带错误码。本服务在 `service/webhook_sender.go` 与 `utils/json_utils.go` 中设置了 **10 秒**请求超时（启动连通性自检为 5 秒），并对响应体执行严格校验：
+
+- **企业微信 / 钉钉**：解析 JSON，若 `errcode != nil && errcode != 0` 判定为发送失败。
+- **飞书**：解析 JSON，若 `code != 0`、`StatusCode != 0` 或 `errcode != 0` 均判定为发送失败。
+- **自定义 Webhook 代理**：若下游返回 HTTP 2xx 且响应体不是 JSON（例如纯文本 `"ok"`），默认视为发送成功。
+
+### 3.4 实际推送消息格式示例
+
+以下文本严格对应 [utils/alert_formater.go](utils/alert_formater.go)、[service/traffic_alert_service.go](service/traffic_alert_service.go) 与 [service/kafka_monitor_service.go](service/kafka_monitor_service.go) 的实际渲染输出：
+
+**1. 触发中告警（以企业微信 Markdown 渲染效果为例）**
+
+```text
+🔥 Prometheus 告警通知
+请关注告警信息，相关人员请注意
+> 状态: 告警中
+> 告警名称: HighCPUUsage
+> 级别: P1
+> 实例: 10.0.8.120:9100
+> 摘要: 节点 CPU 使用率持续高于 90%
+> 描述: 最近 5 分钟 CPU idle 低于 10%，请检查负载进程
+> 触发时间: 2026-11-24 14:30:00
+```
+
+**2. ClickHouse 大流量告警（`alertname="异常流量告警"`、`severity="warning"`）**
+
+```text
+🔥 Prometheus 告警通知
+请关注告警信息，相关人员请注意
+> 状态: 告警中
+> 告警名称: 异常流量告警
+> 级别: P2
+> 实例: api.example.com
+> 摘要: 域名 api.example.com 路径 /export 发现大流量异常
+> 描述: 在过去 10 分钟内，流量统计信息如下
+	• 总请求数: 125
+	• 大请求数量: 8 (阈值: 1.0 MB)
+	• 大响应数量: 12 (阈值: 5.0 MB)
+	• 平均请求大小: 2048.50 字节
+	• 平均响应大小: 8192000.00 字节
+	• 最大请求大小: 4194304 字节
+	• 最大响应大小: 20971520 字节
+最近的大请求示例:
+1. 14:25:32 POST /api/export (请求:4194304字节, 响应:20971520字节, 耗时:1.500s)
+> 触发时间: 2026-11-24 14:30:00
+```
+
+**3. Kafka 消费积压告警（`alertname="Kafka消费者组积压告警"`、`severity="warning"`）**
+
+```text
+🔥 Prometheus 告警通知
+请关注告警信息，相关人员请注意
+> 状态: 告警中
+> 告警名称: Kafka消费者组积压告警
+> 级别: P2
+> 实例: order-group-01
+> 摘要: Kafka消费者组 order-group-01 积压告警
+> 描述: 消费者组积压信息:
+	• 消费者组ID: order-group-01
+	• 当前积压量: 299390
+	• 告警阈值: 100000
+	• 成员数量: 0
+	• 关联主题数: 1
+	• 组状态: EMPTY
+	• 协调器: 172.25.101.24:9092
+> 触发时间: 2026-11-24 14:30:00
+```
+
+**4. 已恢复通知（`status="resolved"`）**
+
+```text
+♻ Prometheus 告警恢复
+> 状态: 已恢复
+> 告警名称: HighCPUUsage
+> 恢复时间: 2026-11-24 14:45:00
+```
 
 ---
 
-## 📊 ClickHouse 与 Kafka UI 监控配置
+## 4. 配置系统与过滤规则详解
 
-### 1. ClickHouse 大流量告警准备（可选）
+完整 YAML 模板见 [config-example.yaml](config-example.yaml)，Kafka 专项示例见 [config-kafka-example.yaml](config-kafka-example.yaml)，环境变量模板见 [.env.example](.env.example)。
 
-如果启用 `traffic_alert.enabled: true`，需要在 ClickHouse 中提前准备 `nginx_access` 访问日志表（可在 `clickhouse.database` 中自定义库名，仅允许字母、数字和下划线）：
+### 4.1 加载优先级与热更新边界
+
+1. **配置文件路径解析优先级**：`命令行 -config 参数` > `环境变量 ALERT_WEBHOOK_CONFIG` > `./config.yaml`。如果目标文件不存在，程序会自动创建默认配置并正常启动。
+2. **字段值生效优先级**：`非空 ALERT_WEBHOOK_* 环境变量` > `config.yaml` > `程序内置默认值`。
+3. **环境变量启用渠道的特殊规则**：设置 `ALERT_WEBHOOK_WECHAT_URL` / `DINGTALK_URL` / `FEISHU_URL` 时，始终会覆盖内存中的 `notifiers.<client>.webhook_url`；但**只有当 `config.yaml` 中的 `client` 列表原本为空（`[]`）时**，程序才会自动把该渠道加入 `client` 启用列表；若 `config.yaml` 中已显式配置了 `client: [wechat]`，则不会擅自启用其他渠道。
+4. **热更新行为**：在 Web 控制台保存配置、调用 `PUT /api/config` / `PUT /api/config/yaml` 或 `POST /api/config/reload` 后，除 `server.port`、`server.data_dir`、`server.log_dir` 三项变更会返回 `restart_required: true` 提示需要重启进程/容器外，通知渠道、过滤规则、ClickHouse 与 Kafka 监控任务均立即**无重启热生效**（旧巡检任务会被优雅 `Stop()` 后按新配置重建）。
+
+### 4.2 完整配置字段手册
+
+| 配置路径 | 类型 | 默认值 | 校验规则 / 说明 | 支持热更新 |
+| :--- | :--- | :--- | :--- | :--- |
+| `server.port` | `string` | `"0.0.0.0:18082"` | 需符合 `host:port` 或 `:port`（端口 `1-65535`） | 否（需重启） |
+| `server.ui_enabled` | `bool` | `true` | 为 `false` 时隐藏 Web 控制台与静态资源，仅提供 API 与 Webhook | 是 |
+| `server.auth_token` | `string` | `""` | 非空时开启 `/api/*` Token 认证 | 是 |
+| `server.data_dir` | `string` | `"./data"` | `alerts.jsonl` 持久化目录 | 否（需重启） |
+| `server.log_dir` | `string` | `"./logs"` | `alter-server.log` 轮转日志目录 | 否（需重启） |
+| `client` | `string[]` | `[]` | 启用的渠道列表，支持 `"wechat"` / `"dingtalk"` / `"feishu"` | 是 |
+| `notifiers.<name>.webhook_url` | `string` | `""` | 对应渠道 Webhook URL（含 `xxxxxx` 等占位符将被识别为未配置） | 是 |
+| `filter.alert_name.include` | `string[]` | `[]` | 告警名称白名单，支持 `*` 通配符 | 是 |
+| `filter.alert_name.exclude` | `string[]` | `[]` | 告警名称黑名单，优先级高于 `include` | 是 |
+| `filter.severity.include` | `string[]` | `[]` | 告警级别白名单，支持 `*` 通配符 | 是 |
+| `filter.severity.exclude` | `string[]` | `["info", "none"]` | 告警级别黑名单，优先级高于 `include` | 是 |
+| `clickhouse.host` | `string` | `"localhost"` | 启用 `traffic_alert` 时不能为空 | 是 |
+| `clickhouse.port` | `int` | `9000` | ClickHouse Native TCP 端口（`1-65535`） | 是 |
+| `clickhouse.database` | `string` | `"nginxlogs"` | 严格正则校验 `^[a-zA-Z0-9_]+$` 防 SQL 注入 | 是 |
+| `clickhouse.username` | `string` | `"default"` | ClickHouse 用户名 | 是 |
+| `clickhouse.password` | `string` | `""` | ClickHouse 密码 | 是 |
+| `traffic_alert.enabled` | `bool` | `false` | 是否启用 ClickHouse 大流量巡检 | 是 |
+| `traffic_alert.check_interval` | `int` | `300` | 巡检周期（秒），小于 `5` 时运行时自动钳制为 `5` 秒 | 是 |
+| `traffic_alert.request_size_threshold` | `int64` | `1048576` (1MB) | 单次请求大小阈值（字节） | 是 |
+| `traffic_alert.response_size_threshold` | `int64` | `5242880` (5MB) | 单次响应大小阈值（字节） | 是 |
+| `traffic_alert.time_window` | `int` | `10` | SQL 回溯统计时间窗口（分钟，需 `> 0`） | 是 |
+| `traffic_alert.count_threshold` | `int` | `5` | 窗口内大请求或大响应触发告警次数阈值（需 `> 0`） | 是 |
+| `kafka_monitor.enabled` | `bool` | `false` | 是否启用 Kafka UI 消费者组积压巡检 | 是 |
+| `kafka_monitor.kafka_ui_url` | `string` | `"http://localhost:8090"` | Kafka UI 基础地址（合法 http/https URL，不含路径） | 是 |
+| `kafka_monitor.cluster_name` | `string` | `"local-kafka"` | Kafka UI 中的集群名称 | 是 |
+| `kafka_monitor.check_interval` | `int` | `60` | 巡检周期（秒），小于 `5` 时自动钳制为 `5` 秒 | 是 |
+| `kafka_monitor.consumer_lag_threshold` | `int64` | `100000` | 触发告警的消费积压消息数阈值（严格 `>` 触发，配置需 `>= 0`） | 是 |
+| `kafka_monitor.monitored_groups` | `string[]` | `[]` | 指定监控的消费组 ID 列表，为空则监控全部 | 是 |
+| `kafka_monitor.ignored_groups` | `string[]` | `[]` | 忽略的消费组 ID 列表，优先级高于 `monitored_groups` | 是 |
+
+### 4.3 环境变量一览表
+
+| 环境变量 | 容器默认值 / 示例 | 说明 |
+| :--- | :--- | :--- |
+| `ALERT_WEBHOOK_CONFIG` | `/app/config/config.yaml` | 配置文件路径（低于 `-config` 参数） |
+| `ALERT_WEBHOOK_PORT` | `0.0.0.0:18082` | 覆盖 `server.port` |
+| `ALERT_WEBHOOK_AUTH_TOKEN` | `""` | 覆盖 `server.auth_token` |
+| `ALERT_WEBHOOK_DATA_DIR` | `/app/data` | 覆盖 `server.data_dir` |
+| `ALERT_WEBHOOK_LOG_DIR` | `/app/logs` | 覆盖 `server.log_dir` |
+| `ALERT_WEBHOOK_WECHAT_URL` | `""` | 覆盖企业微信 Webhook URL |
+| `ALERT_WEBHOOK_DINGTALK_URL` | `""` | 覆盖钉钉 Webhook URL |
+| `ALERT_WEBHOOK_FEISHU_URL` | `""` | 覆盖飞书 Webhook URL |
+| `ALERT_WEBHOOK_CLICKHOUSE_HOST` | `""` | 覆盖 `clickhouse.host` |
+| `ALERT_WEBHOOK_CLICKHOUSE_PORT` | `""` | 覆盖 `clickhouse.port`（`1-65535`） |
+| `ALERT_WEBHOOK_CLICKHOUSE_DB` | `""` | 覆盖 `clickhouse.database` |
+| `ALERT_WEBHOOK_CLICKHOUSE_USER` | `""` | 覆盖 `clickhouse.username` |
+| `ALERT_WEBHOOK_CLICKHOUSE_PASSWORD` | `""` | 覆盖 `clickhouse.password` |
+| `ALERT_WEBHOOK_TRAFFIC_ENABLED` | `""` | 覆盖 `traffic_alert.enabled`（`true`/`false`） |
+| `ALERT_WEBHOOK_KAFKA_ENABLED` | `""` | 覆盖 `kafka_monitor.enabled`（`true`/`false`） |
+| `ALERT_WEBHOOK_KAFKA_UI_URL` | `""` | 覆盖 `kafka_monitor.kafka_ui_url` |
+| `ALERT_WEBHOOK_KAFKA_CLUSTER` | `""` | 覆盖 `kafka_monitor.cluster_name` |
+| `ALERT_WEBHOOK_HOST_PORT` | `18082` | 仅 `docker-compose.yml` 使用：宿主机映射端口 |
+| `TZ` | `Asia/Shanghai` | 容器与默认本地时间时区 |
+| `GIN_MODE` | `release` | 设为 `debug` 可开启 Gin 详细路由调试日志 |
+
+### 4.4 过滤规则执行顺序与真值表
+
+所有告警按以下 **5 步短路顺序**判定（`*` 支持任意 UTF-8 多段通配，如 `High*CPU*`、`*Test*`）：
+
+1. **内置无效级别丢弃**：`strings.EqualFold(severity, "none")` 直接拦截（在 Webhook 与模拟器入口生效）。
+2. **`alert_name.exclude`**：命中任一规则 -> **拦截**。
+3. **`alert_name.include`**：若列表非空，未命中任何规则 -> **拦截**；列表为空则跳过。
+4. **`severity.exclude`**：命中任一规则 -> **拦截**。
+5. **`severity.include`**：若列表非空，未命中任何规则 -> **拦截**；否则 **放行**。
+
+> ⚠️ **白名单常见踩坑**：ClickHouse 大流量告警固定以 `alertname="异常流量告警"`、`severity="warning"` 进入同一套过滤引擎；Kafka 积压告警固定以 `alertname="Kafka消费者组积压告警"`、`severity="warning"` 进入过滤引擎。如果你开启了 `filter.alert_name.include` 白名单，**请务必把 `"异常流量告警"` 或 `"Kafka消费者组积压告警"` 也加入白名单**，否则会被当成非白名单告警拦截。
+
+假设配置如下：`alert_name.include: ["High*", "异常流量告警"]`、`alert_name.exclude: ["*Test*"]`、`severity.exclude: ["info", "none"]`：
+
+| `alertname` | `severity` | 结果 | 命中原因 |
+| :--- | :--- | :--- | :--- |
+| `HighCPUUsage` | `critical` | ✅ 放行 | 命中 `High*`，未命中任何 `exclude` |
+| `HighTestAlert` | `critical` | ❌ 拦截 | 第 2 步先命中 `alert_name.exclude: *Test*` |
+| `DiskFull` | `critical` | ❌ 拦截 | 第 3 步未命中 `alert_name.include` |
+| `HighMemory` | `info` | ❌ 拦截 | 第 4 步命中 `severity.exclude: info` |
+| `异常流量告警` | `warning` | ✅ 放行 | 命中 `alert_name.include` 且通过 `severity` 检查 |
+
+---
+
+## 5. ClickHouse 大流量监控与 Kafka UI 巡检原理
+
+### 5.1 ClickHouse 大流量异常检测
+
+开启 `traffic_alert.enabled: true` 后，服务启动时会向 `<clickhouse.database>.nginx_access` 执行 `SELECT count(*) ... WHERE timestamp >= now() - INTERVAL 1 MINUTE` 验证连接（连不上时仅报错并降级禁用大流量巡检，不影响主服务启动）。定时任务每 `check_interval` 秒执行以下聚合查询（15 秒查询超时）：
 
 ```sql
--- 1. 创建数据库
+SELECT
+    domain,
+    top_path,
+    count(*) AS total_count,
+    avg(request_length) AS avg_request_size,
+    avg(response_length) AS avg_response_size,
+    max(request_length) AS max_request_size,
+    max(response_length) AS max_response_size,
+    countIf(request_length > ?) AS large_request_count,
+    countIf(response_length > ?) AS large_response_count
+FROM `<database>`.nginx_access
+WHERE timestamp >= now() - INTERVAL ? MINUTE
+GROUP BY domain, top_path
+HAVING large_request_count >= ? OR large_response_count >= ?
+ORDER BY total_count DESC
+LIMIT 100
+```
+
+命中异常的 `(domain, top_path)` 会再取最近 5 条超大请求/响应（在消息正文中展示前 3 条示例）。**调优建议**：建议保持 `check_interval`（秒）与 `time_window * 60` 接近（例如 `time_window: 10` 分钟搭配 `check_interval: 300` 或 `600` 秒），避免同一个窗口内的异常在短时间内重复告警。
+
+<details>
+<summary>点击展开 ClickHouse 建表 SQL (nginxlogs.nginx_access)</summary>
+
+```sql
 CREATE DATABASE IF NOT EXISTS nginxlogs;
 
--- 2. 创建 nginx_access 表
 CREATE TABLE nginxlogs.nginx_access
 (
     `timestamp` DateTime64(3, 'Asia/Shanghai'),
@@ -252,246 +700,220 @@ CREATE TABLE nginxlogs.nginx_access
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(timestamp)
-PRIMARY KEY (timestamp, server_ip, status, top_path, domain, upstreamhost, client_ip, remote_user, request_method, protocol, responsetime, upstreamtime, duration, request_length, response_length, path, referer, client_city, client_region, client_country, client_browser_family, client_browser_major, client_os_family, client_os_major, client_device_brand, client_device_model)
+PRIMARY KEY (timestamp, server_ip, status, top_path, domain)
 TTL toDateTime(timestamp) + toIntervalDay(30)
 SETTINGS index_granularity = 8192;
 ```
 
-配置好后，可在 Web 控制台「配置中心 → 流量监控」点击 **测试 ClickHouse 连接**，验证连通性与最近 1 分钟日志行数。
+</details>
 
-### 2. Kafka UI 消费组监控（可选）
+### 5.2 Kafka UI 消费者组积压监控
 
-启用 `kafka_monitor.enabled: true` 后，服务会定期调用 Kafka UI API 查询指定 `cluster_name` 的消费者组积压情况：
-- `monitored_groups`：为空时监控所有消费者组；配置列表时仅监控指定组。
-- `ignored_groups`：优先级高于 `monitored_groups`，用于排除无需关注的消费者组。
-- 在 Web 控制台「配置中心 → Kafka 监控」点击 **测试 Kafka UI 连接**，可直观查看实时消费组与 Lag 列表，并一键加入监控或忽略名单。
+开启 `kafka_monitor.enabled: true` 后，服务每 `check_interval` 秒请求一次 Kafka UI 分页接口（10 秒 HTTP 超时、单轮巡检 15 秒总超时，读取前 100 个消费组）：
 
-### 3. 过滤规则与消息分批机制
+```text
+GET <kafka_ui_url>/api/clusters/<cluster_name>/consumer-groups/paged?page=1&perPage=100&search=
+```
 
-- **过滤规则**：`exclude` 优先级高于 `include`；`alert_name` 和 `severity` 两个维度需同时通过。支持 `*` 通配符（如 `HighCPU*`、`*Memory*`、`*Test*`）。
-- **企业微信自动分批**：针对企业微信 4096 字节单条消息限制，系统会自动拆分多条告警按序发送，确保信息完整不截断。
+- **筛选顺序**：先跳过 `ignored_groups` 中的组；若 `monitored_groups` 非空则只检查名单内的组；当 `consumerLag > consumer_lag_threshold`（严格大于）时触发告警。
+- **在线探查**：在 Web 控制台「配置中心 → Kafka 监控」点击 **测试 Kafka UI 连接**，可直接列出当前集群下所有消费组与实时 Lag，并支持一键加入监控名单或忽略名单。
 
 ---
 
-## 📋 API 接口文档
+## 6. Web 控制台与安全认证
 
-### 公开端点（无需认证）
+服务启动后访问 `http://<server-ip>:18082` 即可打开控制台（右上角支持浅色 / 深色主题与 10 秒自动刷新开关）：
 
-| 方法与路径 | 说明 | 示例响应 |
-| :--- | :--- | :--- |
-| `POST /webhook-alert` | 接收 Prometheus Alertmanager Webhook 并推送到已启用平台，同步记录到历史审计 | `200` 成功 / `400` 参数错误 / `500` 推送失败 |
-| `GET /healthz` | 存活探针（Liveness Probe） | `200 {"status":"ok","uptime_seconds":120,"version":"1.2.0"}` |
-| `GET /readyz` | 就绪探针（Readiness Probe） | `200 {"status":"ready","config_loaded":true,"enabled_clients":["wechat"]}` |
-
-### 管理控制台端点（`/api/*`）
-
-> 若启用了 `auth_token`，所有 `/api/*` 请求需在 Header 中携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，未授权将返回 `401 {"error":"unauthorized","auth_required":true}`。
-
-| 方法与路径 | 说明 |
+| 页面 | 核心功能 |
 | :--- | :--- |
-| `GET /api/overview` | 获取服务版本、启动时间、统计指标、24 小时时间线、后台巡检状态及最近 8 条告警 |
-| `GET /api/alerts` | 分页检索告警记录，支持 `page`、`page_size`、`status`、`delivery_state`、`source`、`severity`、`q` 参数 |
-| `DELETE /api/alerts` | 清空告警历史记录 |
-| `GET /api/config` | 获取当前生效配置 JSON、原始 YAML 文本、校验警告及环境变量覆盖列表 |
-| `PUT /api/config` | 提交 JSON 格式配置，校验并原子保存后热重载服务与过滤规则 |
-| `PUT /api/config/yaml` | 提交 `{ "yaml": "..." }` 原始文本并校验热重载 |
-| `POST /api/config/reload` | 从磁盘重新加载配置文件并热更新 |
-| `POST /api/test/notifier` | 测试通知渠道连通性（支持传入 `{ client, webhook_url }` 临时测试未保存的 URL） |
-| `POST /api/test/clickhouse` | 测试 ClickHouse 连通性并返回最近 1 分钟日志数 |
-| `POST /api/test/kafka` | 测试 Kafka UI 连接并返回发现的消费者组列表 |
-| `POST /api/filter/test` | 使用指定过滤规则测试 `alert_name` 与 `severity` 是否放行 |
-| `POST /api/simulate` | 告警调试沙箱（`send: false` 仅返回三平台预览文案；`send: true` 真实推送并记录） |
-| `POST /api/services/traffic/check` | 立即触发一次 ClickHouse 大流量检测 |
-| `POST /api/services/kafka/check` | 立即触发一次 Kafka 消费者组积压检测 |
-| `GET /api/logs` | 查询最近运行日志，支持 `level`（`INFO`/`WARN`/`ERROR`）、`q`、`limit` 参数 |
+| **监控总览** | 4 项核心 KPI、24 小时趋势堆叠图、级别分布环形图、渠道平均延迟健康条、Webhook 接收地址一键复制、ClickHouse/Kafka 一键立即检测 |
+| **告警记录** | 按状态 (`firing`/`resolved`)、投递结果 (`sent`/`partial`/`failed`/`filtered`)、来源 (`alertmanager`/`traffic`/`kafka`/`test`)、级别与关键词分页搜索；点击任意行滑出详情抽屉查看全量 Labels、Annotations、过滤原因和各渠道耗时/响应体；支持导出 JSON 与清空 |
+| **配置中心** | 5 个子标签覆盖通知渠道（含未保存前的临时 URL 连通性测试）、过滤规则（标签编辑 + 在线规则测试器）、流量监控（`B/KB/MB/GB` 单位换算 + ClickHouse 探针）、Kafka 监控（消费组拉取）、服务与原生 YAML 编辑器（导入/下载 + 自动生成 `alertmanager.yml` 片段） |
+| **调试沙箱** | 4 套内置告警场景模板，可一键 **Dry Run 预览**三平台渲染结果（不污染统计）或 **真实发送测试**并观察各渠道返回码 |
+| **运行日志** | 查看内存缓冲的最近 500 条运行日志，支持 `ALL`/`INFO`/`WARN`/`ERROR` 筛选、关键字查找、自动滚动与一键复制 |
+
+**关于 `auth_token` 鉴权：**
+- 一旦通过 `server.auth_token` 或 `ALERT_WEBHOOK_AUTH_TOKEN` 设置非空口令，所有 `/api/*` 请求均会经过 `AuthMiddleware`（基于 `crypto/subtle.ConstantTimeCompare` 常量时间比对），需携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 `401 {"error":"unauthorized","auth_required":true}`；Web 控制台收到 401 会自动弹出解锁窗口。
+- `POST /webhook-alert`、`GET /healthz`、`GET /readyz` 以及静态页面资源始终保持免 Token 访问，不阻断 Alertmanager 推告警或 K8s/Docker 探针。
 
 ---
 
-## 🎨 消息效果预览
+## 7. REST API 完整参考
 
-### 大流量告警消息效果
-```text
-📊 Prometheus 告警通知
-请关注告警信息，相关人员请注意
+### 7.1 公开端点与控制面端点总览
 
-状态: 告警中
-告警名称: HighTrafficAlert
-级别: P2
-域名: test.example.com
-路径: /api
-摘要: 域名 test.example.com 路径 /api 发现大流量异常
-描述: 在过去 10 分钟内:
-• 总请求数: 125
-• 大请求数量: 8 (阈值: 1.0MB)
-• 大响应数量: 12 (阈值: 5.0MB)
-• 平均请求大小: 2048.50 字节
-• 平均响应大小: 8192000.00 字节
-• 最大请求大小: 4194304 字节
-• 最大响应大小: 20971520 字节
+| 端点 | 鉴权 | 说明 / 返回状态 |
+| :--- | :--- | :--- |
+| `POST /webhook-alert` | 无 | 接收 Alertmanager Webhook：`200`（全部发送成功、全部被过滤、无告警或 0 渠道仅记账）、`400`（JSON 无效）、`500`（部分或全部渠道推送失败） |
+| `GET /healthz` | 无 | 存活探针：返回 `{"status":"ok","uptime_seconds":...,"version":"1.2.0"}` |
+| `GET /readyz` | 无 | 就绪探针：返回 `{"status":"ready","config_loaded":true,"enabled_clients":[...]}` |
+| `GET /api/overview` | 可选 | 返回版本、启动时间、`setup_complete`、聚合统计、`timeline`（24h）、巡检服务状态及最近 8 条告警 |
+| `GET /api/alerts` | 可选 | 分页查询：`page`、`page_size`、`status`、`delivery_state`、`source`、`severity`、`q` |
+| `DELETE /api/alerts` | 可选 | 清空告警历史（内存 + `alerts.jsonl`） |
+| `GET /api/config` | 可选 | 返回生效 `config` JSON、配置文件路径、原始 `yaml`、`warnings` 及生效环境变量列表 `env_overrides` |
+| `PUT /api/config` | 可选 | 提交 `AppConfig` JSON，校验、原子落盘并热重载；返回 `{ ok, config, yaml, warnings, restart_required }` |
+| `PUT /api/config/yaml` | 可选 | 提交 `{"yaml":"..."}` 原始 YAML，校验、原子落盘并热重载 |
+| `POST /api/config/reload` | 可选 | 从磁盘重新加载 `config.yaml` 并热重载后台服务 |
+| `POST /api/test/notifier` | 可选 | 测连：`{"client":"wechat\|dingtalk\|feishu\|all","webhook_url":"可选临时地址"}` |
+| `POST /api/test/clickhouse` | 可选 | 测试 ClickHouse 连接并返回延迟与最近 1 分钟日志数（可传临时 `ClickHouseConfig`） |
+| `POST /api/test/kafka` | 可选 | 测试 Kafka UI 连接并返回消费组列表（可传临时 `KafkaMonitorConfig`） |
+| `POST /api/filter/test` | 可选 | 测规则：`{"alert_name":"...","severity":"...","filter":{可选临时规则}}`，返回 `FilterDecision` |
+| `POST /api/simulate` | 可选 | 沙箱模拟：`{"status","alert_name","severity","instance","summary","description","labels","send":bool,"clients":[]}` |
+| `POST /api/services/traffic/check` | 可选 | 立即触发一次 ClickHouse 大流量检测 |
+| `POST /api/services/kafka/check` | 可选 | 立即触发一次 Kafka 消费组积压检测 |
+| `GET /api/logs` | 可选 | 查询运行日志：`level`（`INFO`/`WARN`/`ERROR`）、`q`、`limit`（最大 500） |
 
-最近的大请求示例:
-1. 14:25:32 POST /api/bulk-upload (请求:4194304字节, 响应:12582912字节, 耗时:0.800s)
-2. 14:26:15 GET /api/export (请求:2621440字节, 响应:20971520字节, 耗时:1.500s)
-3. 14:27:08 GET /api/download (请求:1572864字节, 响应:15728640字节, 耗时:2.100s)
-触发时间: 2025-09-16 14:30:00
-```
+### 7.2 高频接口请求示例
 
-### Kafka 消费者组积压告警消息效果
-```text
-📊 Prometheus 告警通知
-请关注告警信息，相关人员请注意
-
-状态: 告警中
-告警名称: Kafka消费者组积压告警
-级别: P2
-消费者组: order-group-01
-摘要: Kafka消费者组 order-group-01 积压告警
-描述: 消费者组积压信息:
-• 消费者组ID: order-group-01
-• 当前积压量: 299390
-• 告警阈值: 100000
-• 成员数量: 0
-• 关联主题数: 1
-• 组状态: EMPTY
-• 协调器: 172.25.101.24:9092
-触发时间: 2025-12-05 14:30:00
-```
-
-### 恢复状态 (RESOLVED)
-```text
-✅ Prometheus 告警恢复
-状态: 已恢复
-
-告警名称: HighCPUUsage
-恢复时间: 2025-09-03 14:45:00
-```
-
----
-
-## 📊 日志、持久化与 Systemd 部署
-
-### 日志与持久化路径
-
-- **标准输出**：所有运行日志同时输出至 `stdout`，容器部署时可直接使用 `docker logs -f alert-webhook` 查看。
-- **文件轮转**：日志同时写入 `<log_dir>/alter-server.log`（默认 `./logs/alter-server.log`），单文件 1MB、保留 5 份、保留 7 天、开启 gzip 压缩。
-- **告警审计存储**：持久化在 `<data_dir>/alerts.jsonl`（默认 `./data/alerts.jsonl`），内存保留最近 1000 条记录。
-
-### Systemd 服务示例
-
-```ini
-[Unit]
-Description=Alert Webhook Notifier
-After=network.target
-
-[Service]
-Type=simple
-User=alert-webhook
-WorkingDirectory=/opt/alert-webhook
-ExecStart=/opt/alert-webhook/alert-webhook -config=/opt/alert-webhook/config.yaml
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
----
-
-## 🧪 测试与排障
-
-### 快速验证与联调
+**1. 模拟 Alertmanager 推送一条触发告警**
 
 ```bash
-# 1. 运行单元测试与竞态检测
-make test-race
-
-# 2. 检查服务存活与就绪状态
-curl http://localhost:18082/healthz
-curl http://localhost:18082/readyz
-
-# 3. 发送模拟 Alertmanager Webhook（或直接在 Web 控制台「调试沙箱」测试）
-curl -X POST http://localhost:18082/webhook-alert \
+curl -X POST http://127.0.0.1:18082/webhook-alert \
   -H "Content-Type: application/json" \
   -d '{
+    "receiver": "webhook-notifier",
     "status": "firing",
     "alerts": [{
       "status": "firing",
-      "labels": {"alertname": "HighCPUUsage", "severity": "critical", "instance": "10.0.0.1:9100"},
-      "annotations": {"summary": "CPU 使用率过高", "description": "节点 10.0.0.1 CPU 持续超过 90%"}
+      "labels": {
+        "alertname": "HighCPUUsage",
+        "severity": "critical",
+        "instance": "10.0.8.120:9100"
+      },
+      "annotations": {
+        "summary": "节点 CPU 使用率过高",
+        "description": "节点 10.0.8.120 CPU 连续 5 分钟超过 90%"
+      }
     }]
   }'
 ```
 
-### 常见问题
+**2. 带 Token 鉴权测试临时通知渠道（无需先保存配置）**
 
-1. **为什么未配置任何渠道也启动成功了？**
-   - v1.2.0 起支持零配置启动，服务会在日志输出提示信息，并允许你直接打开 `http://localhost:18082` 在 Web 控制台完成后续配置。
-2. **Webhook 推送日志显示 HTTP 200 但平台未收到消息？**
-   - 企业微信、钉钉和飞书部分错误会在 HTTP 200 响应体中返回非 0 的 `errcode`/`code`。v1.2.0 已自动校验并记录完整错误响应，可在控制台「告警记录」详情或「运行日志」中直接查看原因。
-3. **过滤规则不生效或配置保存后端口未变？**
-   - 过滤规则中 `exclude` 优先级高于 `include`；可在控制台「配置中心 → 过滤规则」中使用在线测试工具校验。
-   - 通知渠道、过滤规则与巡检服务支持保存即热生效，仅修改 `server.port` 需要重启进程或容器。
+```bash
+curl -s -X POST http://127.0.0.1:18082/api/test/notifier \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-token" \
+  -d '{
+    "client": "wechat",
+    "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your-key"
+  }'
+```
+
+示例返回（若企微返回 `errcode != 0`，`success` 会准确置为 `false` 并带上 `error`）：
+
+```json
+{
+  "ok": true,
+  "results": [
+    {
+      "client": "wechat",
+      "success": true,
+      "status_code": 200,
+      "duration_ms": 142,
+      "batches": 1,
+      "response": "{\"errcode\":0,\"errmsg\":\"ok\"}"
+    }
+  ]
+}
+```
+
+**3. 在线测试过滤规则**
+
+```bash
+curl -s -X POST http://127.0.0.1:18082/api/filter/test \
+  -H "Content-Type: application/json" \
+  -d '{"alert_name":"HighMemoryUsage","severity":"warning"}'
+```
+
+示例返回：
+
+```json
+{
+  "allowed": true,
+  "reason": "通过所有过滤规则"
+}
+```
+
+**4. 在 Ansible/CI 中修改磁盘配置后触发无重启热重载**
+
+```bash
+curl -s -X POST http://127.0.0.1:18082/api/config/reload \
+  -H "X-API-Token: your-token"
+```
 
 ---
 
-## 📝 更新日志
+## 8. 日志、持久化与生产排障手册
 
-### v1.2.0
-- ✨ 新增内置可视化 Web 控制台（监控总览、告警记录审计、可视化配置中心与热更新、调试沙箱、实时运行日志），支持浅色/深色主题与可选 API Token 认证
-- ✨ 新增 `/healthz`、`/readyz` 健康探针与完整 `/api/*` REST 接口
-- ✨ 支持零配置友好启动、原子配置持久化与 `ALERT_WEBHOOK_*` 全量环境变量覆盖
-- ✨ 新增多阶段非 root `Dockerfile`、`docker-compose.yml`、`.env.example` 与 `Makefile` 一键构建部署
-- 🐛 修复 `config` 包 `init()` 内 `flag.Parse()` 与写文件副作用导致的 `go test` 异常
-- 🐛 修复并发推送告警时的切片数据竞争，新增 HTTP 客户端 10 秒超时及企业微信/钉钉/飞书 JSON `errcode`/`code` 校验
-- 🐛 修复无系统 `tzdata` 环境下 `Asia/Shanghai` 加载隐患，内嵌 `time/tzdata` 并为飞书消息补全上海时区转换
-- 🐛 修复 ClickHouse 查询硬编码数据库名问题及 `defer rows.Close()` 潜在致命退出问题
-- 🐛 修复日志仅写入文件导致 `docker logs` 不可见的问题，改为 `stdout + 文件 + 内存缓冲` 多路输出并支持 HTTP 服务优雅停机
+### 8.1 日志与存储明细
 
-### v1.1.0 (2025-12-05)
-- ✨ 新增 Kafka 消费者组监控功能
-- ✨ 支持通过 Kafka UI API 实时获取消费者组信息
-- ✨ 支持自定义消费者组积压阈值
-- ✨ 支持监控指定消费者组或全部消费者组，以及忽略特定消费者组
-- 📚 完善 Kafka 监控相关文档
+- **三路日志输出**（[main.go](main.go)）：`io.MultiWriter` 同时输出到 `os.Stdout`（供 `docker logs` / `journalctl` 采集）、`<log_dir>/alter-server.log`（`lumberjack` 轮转：单文件最大 `1MB`、最多保留 `5` 个备份、保留 `7` 天、自动 `gzip` 压缩）以及内存 `LogBuffer`（最近 `500` 条，供 Web 控制台查看）。
+- **告警审计持久化**（[store/alert_store.go](store/alert_store.go)）：每条进入系统或由后台巡检产生的告警均写入内存环形缓冲（容量 `1000` 条）并追加至 `<data_dir>/alerts.jsonl`；服务重启时自动从 `alerts.jsonl` 恢复最近 1000 条记录。
 
-### v1.0.1 (2025-09-16)
-- ✨ 新增基于 ClickHouse 的大流量告警功能
-- ✨ 支持自定义请求/响应大小阈值和计数阈值
-- ✨ 智能检测 Nginx 访问日志中的异常大流量
-- ✨ 提供详细的流量统计和异常请求示例
-- ✨ 支持按域名和路径分组的精准监控
-- 🐛 修复配置文件错误处理问题
-- 📚 完善文档和测试脚本
+### 8.2 生产排障速查表
 
-### v1.0.0-bugfix (2025-09-03)
-- ✨ 新增智能告警过滤功能
-- ✨ 支持企业微信长消息自动分批
-- ✨ 优化多平台并发推送性能
-- 🐛 修复配置文件循环依赖问题
-
-### v1.0.0
-- 🎉 初始版本发布
-- 📢 支持企业微信、钉钉、飞书三大平台
-- 🎨 美化告警消息格式
+| 现象 / 日志关键字 | 根本原因 | 解决方案 |
+| :--- | :--- | :--- |
+| 启动日志 `dial tcp ...:9000: connect: no route to host` 或 `connection refused` | 配置中启用了 `traffic_alert`，但 ClickHouse 宿主机/跨机器地址不可达，或容器未连通目标网络 | 服务已自动降级禁用大流量巡检，不影响 Webhook 主链路。在「配置中心 → 流量监控」修改正确地址（同机容器避免填 `localhost`，应填宿主机内网 IP 或加入同网络）后点击「测试 ClickHouse 连接」并保存热生效 |
+| Linux 容器启动报错 `permission denied`（无法写入 `/app/config`、`/app/data` 或 `/app/logs`） | 宿主机目录属主为 `root`，而镜像以非 root 用户 `appuser`（UID `100` / GID `101`）运行 | 在宿主机执行 `chown -R 100:101 conf data logs && docker compose restart` |
+| 保存配置时报错 `device or resource busy` (`EBUSY`) | 挂载方式用了单文件 `./config.yaml:/app/config/config.yaml`，阻塞原子重命名 | 改为目录挂载 `./conf:/app/config`，并保证配置文件放在 `./conf/config.yaml` |
+| 钉钉推送失败，返回 `errcode=310000` | 钉钉机器人开启了加签或自定义关键字/IP 限制，未匹配关键字或出口 IP 不在白名单 | 在钉钉机器人安全设置中添加关键字 `Prometheus` 或 `告警`，或将服务器出口 IP 加入白名单 |
+| 企业微信返回 `errcode=93000` 或飞书返回 `code=19021` | Webhook Key/Token 无效、机器人已被移出群聊，或飞书未匹配安全关键字 | 在群设置重新复制机器人 Webhook URL，到控制台「通知渠道」点击 **测试连通性** 验证通过后再保存 |
+| 告警在「告警记录」显示 `filtered`，三平台未收到 | 被 `filter` 规则拦截、`severity` 为 `none`，或开启 `alert_name.include` 白名单后漏配了 `异常流量告警`/`Kafka消费者组积压告警` | 打开该条告警的详情抽屉查看 `filter_reason` 字段，并在「配置中心 → 过滤规则」用在线测试器修正规则 |
+| 修改 `server.port`、`data_dir` 或 `log_dir` 后控制台提示需要重启 | HTTP 监听端口与日志/数据句柄在进程启动时初始化，不支持运行时动态重绑端口 | 执行 `docker compose restart` 或重启二进制进程使新端口/目录生效 |
+| 内网服务器执行 `docker compose up --build` 卡在拉取 `golang:1.24-alpine` | 宿主机无法访问公网 `registry-1.docker.io` | 按 [2.2 离线 / 无 Docker Hub 环境部署](#22-离线--无-docker-hub-环境部署) 在开发机静态编译后以 `FROM scratch` 离线构建 |
 
 ---
 
-## 🤝 贡献指南
+## 9. 本地开发与二次开发指南
 
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add some amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
+### 9.1 构建与测试命令
 
-## 📄 开源协议
+```bash
+# 运行全部单元测试（含竞态检测，推荐每次改动后执行）
+make test-race
+# 等价于：go test -race -v ./...
 
-本项目基于 [MIT License](LICENSE) 开源协议。
+# 静态检查
+go vet ./...
 
-## 🙏 致谢
+# 前端原生 JS 语法校验（无需 npm install）
+node --check web/static/js/*.js web/static/js/views/*.js
 
-感谢所有贡献者和使用者对本项目的支持！
+# 本地构建与运行
+make build
+make run
+```
 
-<p align="center">
-  如果这个项目对你有帮助，请给个 ⭐ Star 支持一下！
-</p>
+### 9.2 扩展新的通知渠道 Checklist
+
+如需新增第 4 个平台（例如 Slack / Email / 通用 Webhook），按以下清单顺序修改即可：
+
+1. [config/webhook_config.go](config/webhook_config.go)：在 `SupportedClients` 与 `DefaultAppConfig()` 中注册新渠道标识（如 `"slack"`）。
+2. [config/manager.go](config/manager.go)：在 `applyEnvOverrides` 中按需补充对应的 `ALERT_WEBHOOK_<NAME>_URL` 环境变量支持。
+3. [utils/alert_formater.go](utils/alert_formater.go)：新增对应的消息格式渲染函数（复用 `GetShanghaiLocation()` 与 `MapSeverity()`）。
+4. [utils/json_utils.go](utils/json_utils.go)：在 `ValidateWebhookResponse` 中补充新平台的 JSON 错误码校验规则。
+5. [service/webhook_sender.go](service/webhook_sender.go)：在 `formatMessageForClient` 与 `testNotifierClientWithHTTP` 中添加消息结构体序列化与测连探针；若有长度限制需分批发送，在 `deliverToClient` 中参照企业微信分支实现。
+6. 前端控制台（[web/static/js/views/config.js](web/static/js/views/config.js)、[web/static/js/views/dashboard.js](web/static/js/views/dashboard.js)、[web/static/js/views/simulator.js](web/static/js/views/simulator.js)）：补充渠道元数据卡片、健康度展示项与沙箱预览 Tab，然后重新 `go build` 即可嵌入生效。
+
+---
+
+## 10. 更新日志与开源协议
+
+### 更新日志
+
+- **v1.2.0**
+  - 新增零外部 CDN 依赖的内置 Web 控制台（监控总览、告警审计抽屉、可视化配置中心与热更新、调试沙箱、实时日志，支持浅色/深色主题与可选 `auth_token` 鉴权）。
+  - 新增 `/healthz`、`/readyz` 探针与全量 `/api/*` REST 控制面接口。
+  - 支持零配置启动、原子配置持久化与 17 个 `ALERT_WEBHOOK_*` 环境变量覆盖。
+  - 新增多阶段非 root [Dockerfile](Dockerfile)、[docker-compose.yml](docker-compose.yml)、[.env.example](.env.example) 与 [Makefile](Makefile)。
+  - 修复 `config` 包 `init()` 副作用导致的 `go test` 冲突、并发推送竞态、缺少 HTTP 超时与 HTTP 200 业务码漏检、无 `tzdata` 环境下时区加载隐患、ClickHouse 硬编码库名与 `defer rows.Close()` 致命退出风险，并实现标准输出+轮转文件+内存缓冲三路日志及 5 秒优雅停机。
+- **v1.1.0 (2025-12-05)**：新增基于 Kafka UI API 的消费者组积压监控。
+- **v1.0.1 (2025-09-16)**：新增基于 ClickHouse 的 Nginx 大流量异常告警。
+- **v1.0.0-bugfix (2025-09-03)**：新增告警过滤规则与企业微信长消息自动分批。
+- **v1.0.0**：初始版本发布，支持企业微信、钉钉、飞书推送。
+
+### 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。
