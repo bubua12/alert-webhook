@@ -16,9 +16,9 @@ export function renderTimelineChart(container, timeline = []) {
       }));
 
   const width = 680;
-  const height = 210;
-  const padLeft = 36;
-  const padRight = 14;
+  const height = 224;
+  const padLeft = 34;
+  const padRight = 12;
   const padTop = 14;
   const padBottom = 28;
   const plotW = width - padLeft - padRight;
@@ -30,7 +30,7 @@ export function renderTimelineChart(container, timeline = []) {
   const yTicks = [0, Math.round(yMax / 2), yMax];
 
   const colStep = plotW / buckets.length;
-  const barW = Math.max(6, Math.min(18, colStep * 0.58));
+  const barW = Math.max(6, Math.min(16, colStep * 0.56));
 
   const gridLinesHtml = yTicks
     .map((tick) => {
@@ -61,15 +61,15 @@ export function renderTimelineChart(container, timeline = []) {
 
       if (firing > 0) {
         cursorY -= hFiring;
-        segments.push(`<rect x="${xBar.toFixed(1)}" y="${cursorY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, hFiring).toFixed(1)}" rx="1.5" fill="#ef4444" />`);
+        segments.push(`<rect x="${xBar.toFixed(1)}" y="${cursorY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, hFiring).toFixed(1)}" rx="1" fill="#c6362f" />`);
       }
       if (resolved > 0) {
         cursorY -= hResolved;
-        segments.push(`<rect x="${xBar.toFixed(1)}" y="${cursorY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, hResolved).toFixed(1)}" rx="1.5" fill="#10b981" />`);
+        segments.push(`<rect x="${xBar.toFixed(1)}" y="${cursorY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, hResolved).toFixed(1)}" rx="1" fill="#0e7a56" />`);
       }
       if (filtered > 0) {
         cursorY -= hFiltered;
-        segments.push(`<rect x="${xBar.toFixed(1)}" y="${cursorY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, hFiltered).toFixed(1)}" rx="1.5" fill="#94a3b8" />`);
+        segments.push(`<rect x="${xBar.toFixed(1)}" y="${cursorY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, hFiltered).toFixed(1)}" rx="1" fill="#9ca3af" />`);
       }
 
       const showXLabel = i % 4 === 0 || i === buckets.length - 1;
@@ -81,7 +81,7 @@ export function renderTimelineChart(container, timeline = []) {
 
       return `
         <g class="chart-col-group" data-idx="${i}" data-hour="${escapeHtml(hour)}" data-firing="${firing}" data-resolved="${resolved}" data-filtered="${filtered}" data-x="${((xCol + colStep / 2) / width * 100).toFixed(2)}" data-y="${(topY / height * 100).toFixed(2)}">
-          <rect x="${xCol.toFixed(1)}" y="${padTop}" width="${colStep.toFixed(1)}" height="${plotH}" rx="4" class="chart-col-highlight" />
+          <rect x="${xCol.toFixed(1)}" y="${padTop}" width="${colStep.toFixed(1)}" height="${plotH}" rx="2" class="chart-col-highlight" />
           ${segments.join('')}
           ${xLabel}
           <rect x="${xCol.toFixed(1)}" y="${padTop}" width="${colStep.toFixed(1)}" height="${plotH}" class="chart-hit" />
@@ -109,10 +109,10 @@ export function renderTimelineChart(container, timeline = []) {
       const { hour, firing, resolved, filtered, x, y } = group.dataset;
       const total = Number(firing) + Number(resolved) + Number(filtered);
       tooltip.innerHTML = `
-        <div style="font-weight:700;margin-bottom:4px;font-family:var(--font-mono)">${escapeHtml(hour)} <span style="color:var(--text-muted);font-weight:500">(共 ${total})</span></div>
-        <div style="display:flex;justify-content:space-between;gap:12px;"><span><span style="color:#ef4444">●</span> 告警中</span><strong>${escapeHtml(firing)}</strong></div>
-        <div style="display:flex;justify-content:space-between;gap:12px;"><span><span style="color:#10b981">●</span> 已恢复</span><strong>${escapeHtml(resolved)}</strong></div>
-        <div style="display:flex;justify-content:space-between;gap:12px;"><span><span style="color:#94a3b8">●</span> 已拦截</span><strong>${escapeHtml(filtered)}</strong></div>
+        <div style="font-weight:700;margin-bottom:5px;font-family:var(--font-mono);">${escapeHtml(hour)} <span style="color:#a1a1aa;font-weight:500;">(共 ${total})</span></div>
+        <div style="display:flex;justify-content:space-between;gap:14px;"><span><span style="color:#f87171">■</span> 告警中</span><strong class="mono">${escapeHtml(firing)}</strong></div>
+        <div style="display:flex;justify-content:space-between;gap:14px;"><span><span style="color:#34d399">■</span> 已恢复</span><strong class="mono">${escapeHtml(resolved)}</strong></div>
+        <div style="display:flex;justify-content:space-between;gap:14px;"><span><span style="color:#9ca3af">■</span> 已拦截</span><strong class="mono">${escapeHtml(filtered)}</strong></div>
       `;
       const clampedX = Math.max(15, Math.min(85, Number(x)));
       const clampedY = Math.max(24, Number(y));
@@ -142,19 +142,19 @@ export function renderSeverityDonut(container, bySeverity = {}) {
   if (!container) return;
 
   const items = [
-    { key: 'emergency', label: '紧急 (P0)', color: '#ef4444', value: Number(bySeverity.emergency) || 0 },
-    { key: 'critical', label: '严重 (P1)', color: '#f97316', value: Number(bySeverity.critical) || 0 },
-    { key: 'warning', label: '警告 (P2)', color: '#f59e0b', value: Number(bySeverity.warning) || 0 },
-    { key: 'info', label: '信息 (P3)', color: '#0ea5e9', value: Number(bySeverity.info) || 0 },
-    { key: 'other', label: '其他', color: '#94a3b8', value: Number(bySeverity.other) || 0 },
+    { key: 'emergency', label: '紧急 (P0)', color: '#c6362f', value: Number(bySeverity.emergency) || 0 },
+    { key: 'critical', label: '严重 (P1)', color: '#c85a17', value: Number(bySeverity.critical) || 0 },
+    { key: 'warning', label: '警告 (P2)', color: '#ca8a04', value: Number(bySeverity.warning) || 0 },
+    { key: 'info', label: '信息 (P3)', color: '#3b6790', value: Number(bySeverity.info) || 0 },
+    { key: 'other', label: '其他', color: '#9ca3af', value: Number(bySeverity.other) || 0 },
   ];
 
   const total = items.reduce((acc, item) => acc + item.value, 0);
-  const size = 148;
+  const size = 136;
   const cx = size / 2;
   const cy = size / 2;
-  const r = 52;
-  const strokeWidth = 18;
+  const r = 54;
+  const strokeWidth = 12;
   const circumference = 2 * Math.PI * r;
 
   let offset = 0;
@@ -196,7 +196,7 @@ export function renderSeverityDonut(container, bySeverity = {}) {
             <span class="legend-dot" style="background:${it.color}"></span>
             <span>${escapeHtml(it.label)}</span>
           </span>
-          <span class="mono" style="font-size:12px;">
+          <span class="mono" style="font-size:11.5px;">
             <strong>${it.value}</strong>
             <span class="text-muted"> (${pct}%)</span>
           </span>
@@ -209,7 +209,7 @@ export function renderSeverityDonut(container, bySeverity = {}) {
     <div class="donut-layout">
       <div class="donut-svg-wrap">
         <svg viewBox="0 0 ${size} ${size}" style="width:100%;height:100%;display:block;" role="img" aria-label="告警级别分布环形图">
-          <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--bg-subtle)" stroke-width="${strokeWidth}" />
+          <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--bg-hover)" stroke-width="${strokeWidth}" />
           ${segmentsHtml}
         </svg>
         <div class="donut-center-label">
@@ -224,8 +224,8 @@ export function renderSeverityDonut(container, bySeverity = {}) {
   const highlight = (activeKey) => {
     container.querySelectorAll('.donut-seg').forEach((el) => {
       const isMatch = !activeKey || el.dataset.key === activeKey;
-      el.style.opacity = isMatch ? '1' : '0.35';
-      el.setAttribute('stroke-width', activeKey && el.dataset.key === activeKey ? String(strokeWidth + 3) : String(strokeWidth));
+      el.style.opacity = isMatch ? '1' : '0.3';
+      el.setAttribute('stroke-width', activeKey && el.dataset.key === activeKey ? String(strokeWidth + 2.5) : String(strokeWidth));
     });
     container.querySelectorAll('.donut-legend-row').forEach((el) => {
       el.classList.toggle('is-active', Boolean(activeKey && el.dataset.key === activeKey));
@@ -259,20 +259,20 @@ export function renderChannelHealth(container, byChannel = {}) {
       const failPct = total > 0 ? (failed / total) * 100 : 0;
       const rateLabel = total > 0 ? `${Math.round(okPct)}%` : '--';
 
-      const statusBadge = !enabled
-        ? '<span class="pill pill-neutral">未启用</span>'
+      const statusInline = !enabled
+        ? '<span class="status-inline is-off"><span class="dot"></span>未启用</span>'
         : configured
-          ? '<span class="pill pill-success">已就绪</span>'
-          : '<span class="pill pill-warning">待配置 URL</span>';
+          ? '<span class="status-inline is-ok"><span class="dot"></span>已就绪</span>'
+          : '<span class="status-inline is-warn"><span class="dot"></span>待配置 URL</span>';
 
       return `
         <div class="channel-health-item">
           <div class="channel-health-top">
             <div class="channel-health-name">
               <span>${escapeHtml(meta.name)}</span>
-              ${statusBadge}
+              ${statusInline}
             </div>
-            <span class="mono text-sm">成功率 <strong>${rateLabel}</strong></span>
+            <span class="mono text-xs text-muted">成功率 <strong style="color:var(--text-primary);">${rateLabel}</strong></span>
           </div>
           <div class="progress-track" title="成功 ${sent} / 失败 ${failed}">
             <div class="progress-fill-ok" style="width:${okPct.toFixed(1)}%"></div>

@@ -71,9 +71,54 @@ const PRESETS = [
   },
 ];
 
+function mapFontColorClass(rawColor) {
+  const c = String(rawColor || '').toLowerCase();
+  if (c === 'red' || c === '#ff0000' || c === '#ff7f0e') return 'sim-c-red';
+  if (c === 'warning' || c === '#ffd700') return 'sim-c-warn';
+  if (c === 'green') return 'sim-c-green';
+  if (c === 'comment') return 'sim-c-muted';
+  return 'sim-c-ink';
+}
+
+function renderFormattedLine(escapedLine) {
+  // Replace escaped <font ...>...</font> tags emitted by Go formatter safely after escapeHtml
+  let out = escapedLine.replace(
+    /&lt;font(?:\s+size=\d+)?\s+color=&quot;([^&"]+)&quot;&gt;([\s\S]*?)&lt;\/font&gt;/gi,
+    (_m, color, inner) => `<span class="${mapFontColorClass(color)}">${inner}</span>`
+  );
+  // Bold markdown **...**
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return out;
+}
+
+function renderChatPreviewHtml(rawText) {
+  const escaped = escapeHtml(rawText || '');
+  const lines = escaped.split('\n');
+  return lines
+    .map((line) => {
+      const trimmed = line.trim();
+      if (trimmed === '&gt; ---' || trimmed === '&gt;---' || trimmed === '---') {
+        return '<div class="sim-divider"></div>';
+      }
+      if (line.startsWith('### ')) {
+        return `<div class="sim-heading">${renderFormattedLine(line.slice(4))}</div>`;
+      }
+      if (line.startsWith('&gt;')) {
+        const inner = line.replace(/^&gt;\s?/, '');
+        return `<div class="sim-quote-line">${renderFormattedLine(inner)}</div>`;
+      }
+      if (!trimmed) {
+        return '<div style="height:6px;"></div>';
+      }
+      return `<div class="sim-line">${renderFormattedLine(line)}</div>`;
+    })
+    .join('');
+}
+
 export function mountSimulator(root, ctx) {
   let destroyed = false;
   let activePreviewTab = 'wechat';
+  let previewMode = 'rendered'; // 'rendered' | 'raw'
   let result = null;
   let running = false;
 
@@ -124,7 +169,7 @@ export function mountSimulator(root, ctx) {
       { id: 'wechat', label: '企业微信' },
       { id: 'dingtalk', label: '钉钉' },
       { id: 'feishu', label: '飞书' },
-      { id: 'payload', label: 'Alertmanager JSON' },
+      { id: 'payload', label: 'JSON' },
     ];
 
     let previewText = '';
@@ -133,6 +178,15 @@ export function mountSimulator(root, ctx) {
     } else {
       previewText = previews[activePreviewTab] || '（该渠道暂无预览输出）';
     }
+
+    const showRendered = previewMode === 'rendered' && activePreviewTab !== 'payload';
+    const previewBodyHtml = showRendered
+      ? `<div class="sim-chat-preview">${renderChatPreviewHtml(previewText)}</div>`
+      : `<pre class="code-block" style="max-height:340px;">${escapeHtml(previewText)}</pre>`;
+
+    const filterIcon = f.allowed
+      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>';
 
     const deliveriesHtml = deliveries.length
       ? deliveries
@@ -158,11 +212,12 @@ export function mountSimulator(root, ctx) {
       : '<div class="text-muted text-sm">本次为 Dry Run 演练或未触发外发推送</div>';
 
     return `
-      <div style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;flex-direction:column;gap:14px;">
         <div class="banner ${f.allowed ? 'banner-success' : 'banner-warning'}">
           <div class="banner-content">
+            <span class="banner-icon" aria-hidden="true">${filterIcon}</span>
             <div>
-              <div class="banner-title">${f.allowed ? '✅ 过滤规则判定：允许发送' : '🚫 过滤规则判定：已拦截'}</div>
+              <div class="banner-title">${f.allowed ? '过滤规则判定：允许发送' : '过滤规则判定：已拦截'}</div>
               <div class="banner-desc">
                 ${escapeHtml(f.reason || '通过当前配置的过滤规则')}
                 ${f.rule ? ` · 规则：<code class="mono">${escapeHtml(f.rule)}</code>` : ''}
@@ -172,18 +227,27 @@ export function mountSimulator(root, ctx) {
         </div>
 
         <div class="card">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 16px 0;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--border-color);">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 14px;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--border-color);">
             <div class="tabs-bar" style="border-bottom:none;">
               ${previewTabs
                 .map(
-                  (t) => `<button type="button" class="tab-btn ${activePreviewTab === t.id ? 'active' : ''}" data-preview-tab="${t.id}">${escapeHtml(t.label)}</button>`
+                  (t) => `<button type="button" class="tab-btn ${activePreviewTab === t.id ? 'active' : ''}" style="padding:9px 8px;" data-preview-tab="${t.id}">${escapeHtml(t.label)}</button>`
                 )
                 .join('')}
             </div>
-            <button id="sim-copy-preview" class="btn btn-secondary btn-xs" type="button">复制当前内容</button>
+            <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+              ${activePreviewTab !== 'payload' ? `
+                <div class="segmented-control" role="group" aria-label="预览模式">
+                  <button type="button" class="seg-btn ${previewMode === 'rendered' ? 'active' : ''}" data-preview-mode="rendered">渲染</button>
+                  <button type="button" class="seg-btn ${previewMode === 'raw' ? 'active' : ''}" data-preview-mode="raw">源码</button>
+                </div>
+              ` : ''}
+              <button id="sim-copy-preview" class="btn btn-secondary btn-xs" type="button">复制</button>
+            </div>
           </div>
           <div class="card-body">
-            <pre id="sim-preview-content" class="code-block" style="max-height:320px;">${escapeHtml(previewText)}</pre>
+            ${previewBodyHtml}
+            <pre id="sim-preview-raw-store" class="hidden">${escapeHtml(previewText)}</pre>
           </div>
         </div>
 
@@ -392,17 +456,6 @@ export function mountSimulator(root, ctx) {
       if (ok) runSimulate(true);
     });
 
-    root.querySelectorAll('[data-preview-tab]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        activePreviewTab = btn.dataset.previewTab;
-        const wrap = root.querySelector('#sim-result-wrap');
-        if (wrap) {
-          wrap.innerHTML = renderResultPanel();
-          bindResultEvents();
-        }
-      });
-    });
-
     bindResultEvents();
   }
 
@@ -418,8 +471,19 @@ export function mountSimulator(root, ctx) {
       });
     });
 
+    root.querySelectorAll('[data-preview-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        previewMode = btn.dataset.previewMode || 'rendered';
+        const wrap = root.querySelector('#sim-result-wrap');
+        if (wrap) {
+          wrap.innerHTML = renderResultPanel();
+          bindResultEvents();
+        }
+      });
+    });
+
     root.querySelector('#sim-copy-preview')?.addEventListener('click', async () => {
-      const content = root.querySelector('#sim-preview-content')?.textContent || '';
+      const content = root.querySelector('#sim-preview-raw-store')?.textContent || '';
       const ok = await copyToClipboard(content);
       ctx.toast(ok ? '已复制渲染内容' : '复制失败', ok ? 'success' : 'error');
     });

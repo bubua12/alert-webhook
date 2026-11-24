@@ -19,22 +19,22 @@ export function mountDashboard(root, ctx) {
   let overviewData = null;
 
   root.innerHTML = `
-    <div id="dash-content" style="display:flex;flex-direction:column;gap:16px;">
+    <div id="dash-content" style="display:flex;flex-direction:column;gap:14px;">
       <div class="empty-state"><span class="spinner"></span> 正在加载监控总览数据...</div>
     </div>
   `;
 
-  function serviceBadge(svc) {
+  function serviceStatusInline(svc) {
     if (!svc || !svc.enabled) {
-      return '<span class="pill pill-neutral">未启用</span>';
+      return '<span class="status-inline is-off"><span class="dot"></span>未启用</span>';
     }
     if (svc.running && svc.healthy) {
-      return '<span class="pill pill-success">运行健康</span>';
+      return '<span class="status-inline is-ok"><span class="dot"></span>运行健康</span>';
     }
     if (svc.running && !svc.healthy) {
-      return '<span class="pill pill-warning">检测异常</span>';
+      return '<span class="status-inline is-warn"><span class="dot"></span>检测异常</span>';
     }
-    return '<span class="pill pill-neutral">已停止</span>';
+    return '<span class="status-inline is-off"><span class="dot"></span>已停止</span>';
   }
 
   function render(data) {
@@ -69,12 +69,12 @@ export function mountDashboard(root, ctx) {
       ? `
         <div class="banner banner-warning">
           <div class="banner-content">
-            <span class="kpi-icon warning" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span class="banner-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             </span>
             <div>
               <div class="banner-title">尚未完成通知渠道配置</div>
-              <div class="banner-desc">当前尚未启用任何有效的企业微信、钉钉或飞书机器人 Webhook，系统将记录收到的告警但暂不会外发通知。</div>
+              <div class="banner-desc">当前尚未启用有效的企业微信、钉钉或飞书机器人 Webhook，系统将记录收到的告警但暂不会外发通知。</div>
             </div>
           </div>
           <div class="banner-actions">
@@ -112,14 +112,9 @@ export function mountDashboard(root, ctx) {
     container.innerHTML = `
       ${onboardingHtml}
 
-      <section class="grid-4" aria-label="核心指标">
-        <div class="kpi-card">
-          <div class="kpi-top">
-            <span class="kpi-label">告警总数</span>
-            <span class="kpi-icon accent" aria-hidden="true">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-            </span>
-          </div>
+      <section class="kpi-strip" aria-label="核心指标">
+        <div class="kpi-cell">
+          <div class="kpi-label">告警总数</div>
           <div class="kpi-value">${total}</div>
           <div class="kpi-sub">
             <span>AM ${Number(bySource.alertmanager) || 0}</span>
@@ -129,13 +124,8 @@ export function mountDashboard(root, ctx) {
           </div>
         </div>
 
-        <div class="kpi-card">
-          <div class="kpi-top">
-            <span class="kpi-label">推送成功率</span>
-            <span class="kpi-icon success" aria-hidden="true">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-            </span>
-          </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">推送成功率</div>
           <div class="kpi-value">${successRate}%</div>
           <div class="kpi-sub">
             <span class="text-success">成功 ${sent}</span>
@@ -144,13 +134,8 @@ export function mountDashboard(root, ctx) {
           </div>
         </div>
 
-        <div class="kpi-card">
-          <div class="kpi-top">
-            <span class="kpi-label">当前告警中 / 已恢复</span>
-            <span class="kpi-icon danger" aria-hidden="true">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            </span>
-          </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">当前告警中 / 已恢复</div>
           <div class="kpi-value">
             <span class="${firing > 0 ? 'text-danger' : ''}">${firing}</span>
             <span class="text-muted" style="font-size:18px;font-weight:500;"> / ${resolved}</span>
@@ -160,13 +145,8 @@ export function mountDashboard(root, ctx) {
           </div>
         </div>
 
-        <div class="kpi-card">
-          <div class="kpi-top">
-            <span class="kpi-label">规则已拦截</span>
-            <span class="kpi-icon warning" aria-hidden="true">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-            </span>
-          </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">规则已拦截</div>
           <div class="kpi-value">${filtered}</div>
           <div class="kpi-sub">
             <span>拦截占比 ${filterPct}%</span>
@@ -180,9 +160,9 @@ export function mountDashboard(root, ctx) {
           <div class="card-header">
             <h2 class="card-title">24 小时告警趋势</h2>
             <div class="chart-legend">
-              <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>告警中</span>
-              <span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>已恢复</span>
-              <span class="legend-item"><span class="legend-dot" style="background:#94a3b8"></span>规则拦截</span>
+              <span class="legend-item"><span class="legend-dot" style="background:#c6362f"></span>告警中</span>
+              <span class="legend-item"><span class="legend-dot" style="background:#0e7a56"></span>已恢复</span>
+              <span class="legend-item"><span class="legend-dot" style="background:#9ca3af"></span>规则拦截</span>
             </div>
           </div>
           <div class="card-body">
@@ -213,26 +193,27 @@ export function mountDashboard(root, ctx) {
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">Webhook 接收器</h2>
-            <span class="pill pill-success">监听中</span>
+            <span class="status-inline is-ok"><span class="dot"></span>监听中</span>
           </div>
           <div class="card-body">
-            <div class="text-muted text-xs mb-3" style="margin-bottom:6px;">Alertmanager 推送目标 URL</div>
+            <div class="text-muted text-xs" style="margin-bottom:6px;">Alertmanager 推送目标 URL</div>
             <div class="copy-box">
               <code title="${escapeHtml(webhookUrl)}">${escapeHtml(webhookUrl)}</code>
               <button id="dash-copy-webhook" class="btn btn-secondary btn-xs" type="button">复制</button>
             </div>
-            <div class="service-card-meta">
-              <div class="metric-mini">
-                <div class="metric-mini-label">监听端口</div>
-                <div class="metric-mini-val mono" title="${escapeHtml(data.server_port || '--')}">${escapeHtml(data.server_port || '--')}</div>
+            <div class="kv-list">
+              <div class="kv-row">
+                <span class="kv-label">监听端口</span>
+                <span class="kv-value mono" title="${escapeHtml(data.server_port || '--')}">${escapeHtml(data.server_port || '--')}</span>
               </div>
-              <div class="metric-mini">
-                <div class="metric-mini-label">API 鉴权</div>
-                <div class="metric-mini-val">${data.auth_required ? '已开启令牌' : '未开启'}</div>
+              <div class="kv-row">
+                <span class="kv-label">API 鉴权</span>
+                <span class="kv-value">${data.auth_required ? '已开启令牌' : '未开启'}</span>
               </div>
-            </div>
-            <div class="text-xs text-muted mono mt-3" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(data.config_path || '')}">
-              配置: ${escapeHtml(data.config_path || './config.yaml')}
+              <div class="kv-row">
+                <span class="kv-label">配置文件</span>
+                <span class="kv-value mono" title="${escapeHtml(data.config_path || './config.yaml')}">${escapeHtml(data.config_path || './config.yaml')}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -240,23 +221,27 @@ export function mountDashboard(root, ctx) {
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">ClickHouse 大流量监控</h2>
-            ${serviceBadge(traffic)}
+            ${serviceStatusInline(traffic)}
           </div>
           <div class="card-body">
-            <div class="service-card-meta" style="margin-top:0;">
-              <div class="metric-mini">
-                <div class="metric-mini-label">最近异常数</div>
-                <div class="metric-mini-val">${escapeHtml(traffic.anomalies_last ?? 0)}</div>
+            <div class="kv-list" style="margin-top:0;">
+              <div class="kv-row">
+                <span class="kv-label">最近异常数</span>
+                <span class="kv-value mono">${escapeHtml(traffic.anomalies_last ?? 0)}</span>
               </div>
-              <div class="metric-mini">
-                <div class="metric-mini-label">累计告警次数</div>
-                <div class="metric-mini-val">${escapeHtml(traffic.total_alerts ?? 0)}</div>
+              <div class="kv-row">
+                <span class="kv-label">累计告警次数</span>
+                <span class="kv-value mono">${escapeHtml(traffic.total_alerts ?? 0)}</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-label">最近检查</span>
+                <span class="kv-value mono">${escapeHtml(formatTimestamp(traffic.last_check))}</span>
               </div>
             </div>
-            <div class="text-xs text-muted mt-3">最近检查: <span class="mono">${escapeHtml(formatTimestamp(traffic.last_check))}</span></div>
             ${traffic.last_error ? `<div class="text-xs text-danger mt-2 mono" style="word-break:break-word;">${escapeHtml(traffic.last_error)}</div>` : ''}
-            <div class="mt-3" style="display:flex;justify-content:flex-end;">
-              <button id="dash-check-traffic" class="btn btn-secondary btn-sm" type="button" ${!traffic.enabled ? 'disabled title="请先在配置中心启用大流量监控"' : ''}>立即检测</button>
+            <div class="service-card-footer">
+              <span class="text-xs text-muted">${traffic.enabled ? '定时巡检已开启' : '未启用巡检'}</span>
+              <button id="dash-check-traffic" class="btn btn-secondary btn-xs" type="button" ${!traffic.enabled ? 'disabled title="请先在配置中心启用大流量监控"' : ''}>立即检测</button>
             </div>
           </div>
         </div>
@@ -264,23 +249,27 @@ export function mountDashboard(root, ctx) {
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">Kafka 消费积压监控</h2>
-            ${serviceBadge(kafka)}
+            ${serviceStatusInline(kafka)}
           </div>
           <div class="card-body">
-            <div class="service-card-meta" style="margin-top:0;">
-              <div class="metric-mini">
-                <div class="metric-mini-label">积压 / 总消费组</div>
-                <div class="metric-mini-val">${escapeHtml(kafka.lagged_last ?? 0)} / ${escapeHtml(kafka.total_groups ?? 0)}</div>
+            <div class="kv-list" style="margin-top:0;">
+              <div class="kv-row">
+                <span class="kv-label">积压 / 总消费组</span>
+                <span class="kv-value mono">${escapeHtml(kafka.lagged_last ?? 0)} / ${escapeHtml(kafka.total_groups ?? 0)}</span>
               </div>
-              <div class="metric-mini">
-                <div class="metric-mini-label">累计告警次数</div>
-                <div class="metric-mini-val">${escapeHtml(kafka.total_alerts ?? 0)}</div>
+              <div class="kv-row">
+                <span class="kv-label">累计告警次数</span>
+                <span class="kv-value mono">${escapeHtml(kafka.total_alerts ?? 0)}</span>
+              </div>
+              <div class="kv-row">
+                <span class="kv-label">最近检查</span>
+                <span class="kv-value mono">${escapeHtml(formatTimestamp(kafka.last_check))}</span>
               </div>
             </div>
-            <div class="text-xs text-muted mt-3">最近检查: <span class="mono">${escapeHtml(formatTimestamp(kafka.last_check))}</span></div>
             ${kafka.last_error ? `<div class="text-xs text-danger mt-2 mono" style="word-break:break-word;">${escapeHtml(kafka.last_error)}</div>` : ''}
-            <div class="mt-3" style="display:flex;justify-content:flex-end;">
-              <button id="dash-check-kafka" class="btn btn-secondary btn-sm" type="button" ${!kafka.enabled ? 'disabled title="请先在配置中心启用 Kafka 监控"' : ''}>立即检测</button>
+            <div class="service-card-footer">
+              <span class="text-xs text-muted">${kafka.enabled ? '定时巡检已开启' : '未启用巡检'}</span>
+              <button id="dash-check-kafka" class="btn btn-secondary btn-xs" type="button" ${!kafka.enabled ? 'disabled title="请先在配置中心启用 Kafka 监控"' : ''}>立即检测</button>
             </div>
           </div>
         </div>

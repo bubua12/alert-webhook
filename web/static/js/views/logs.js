@@ -6,6 +6,24 @@ import {
   debounce,
 } from '../api.js';
 
+function formatLogMessageParts(rawMsg) {
+  let msg = String(rawMsg || '');
+  // Strip redundant Go stdlog leading YYYY/MM/DD HH:MM:SS prefix
+  msg = msg.replace(/^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\s+/, '');
+  // Separate optional source file:line prefix for muted syntax styling
+  const srcMatch = msg.match(/^([a-zA-Z0-9_.-]+\.go:\d+):\s+([\s\S]*)$/);
+  if (srcMatch) {
+    return { src: srcMatch[1], text: srcMatch[2] };
+  }
+  return { src: '', text: msg };
+}
+
+function shortClock(ts) {
+  const full = formatTimestamp(ts);
+  const m = String(full).match(/(\d{2}:\d{2}:\d{2})/);
+  return { short: m ? m[1] : full, full };
+}
+
 export function mountLogs(root, ctx) {
   let destroyed = false;
   let reqSeq = 0;
@@ -19,15 +37,15 @@ export function mountLogs(root, ctx) {
   let total = 0;
 
   root.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;flex-direction:column;gap:14px;">
       <div class="card">
         <div class="card-body">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;" role="group" aria-label="日志级别筛选">
-              <button type="button" class="btn btn-sm btn-primary" data-log-level="">ALL</button>
-              <button type="button" class="btn btn-sm btn-secondary" data-log-level="INFO">INFO</button>
-              <button type="button" class="btn btn-sm btn-secondary" data-log-level="WARN">WARN</button>
-              <button type="button" class="btn btn-sm btn-secondary" data-log-level="ERROR">ERROR</button>
+            <div class="segmented-control" role="group" aria-label="日志级别筛选">
+              <button type="button" class="seg-btn active" data-log-level="">ALL</button>
+              <button type="button" class="seg-btn" data-log-level="INFO">INFO</button>
+              <button type="button" class="seg-btn" data-log-level="WARN">WARN</button>
+              <button type="button" class="seg-btn" data-log-level="ERROR">ERROR</button>
             </div>
 
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;justify-content:flex-end;">
@@ -47,7 +65,7 @@ export function mountLogs(root, ctx) {
             </div>
           </div>
 
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color);flex-wrap:wrap;">
             <div id="logs-meta" class="text-xs text-muted mono">加载中...</div>
             <div style="display:flex;align-items:center;gap:8px;">
               <span id="logs-paused-badge" class="pill pill-warning hidden">已暂停实时更新</span>
@@ -74,7 +92,7 @@ export function mountLogs(root, ctx) {
   function updateLevelButtons() {
     root.querySelectorAll('[data-log-level]').forEach((btn) => {
       const active = btn.dataset.logLevel === level;
-      btn.className = `btn btn-sm ${active ? 'btn-primary' : 'btn-secondary'}`;
+      btn.classList.toggle('active', active);
     });
   }
 
@@ -91,11 +109,14 @@ export function mountLogs(root, ctx) {
       .map((entry) => {
         const lvl = String(entry.level || 'INFO').toUpperCase();
         const safeLvl = lvl === 'ERROR' || lvl === 'WARN' || lvl === 'INFO' ? lvl : 'INFO';
+        const timeInfo = shortClock(entry.timestamp);
+        const parts = formatLogMessageParts(entry.message);
+        const srcHtml = parts.src ? `<span class="log-src">${escapeHtml(parts.src)}</span>` : '';
         return `
           <div class="log-line">
-            <span class="log-time">${escapeHtml(formatTimestamp(entry.timestamp))}</span>
+            <span class="log-time" title="${escapeHtml(timeInfo.full)}">${escapeHtml(timeInfo.short)}</span>
             <span class="log-level ${safeLvl}">${escapeHtml(safeLvl)}</span>
-            <span class="log-msg">${escapeHtml(entry.message || '')}</span>
+            <span class="log-msg">${srcHtml}${escapeHtml(parts.text)}</span>
           </div>
         `;
       })

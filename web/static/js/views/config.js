@@ -337,7 +337,7 @@ export function mountConfig(root, ctx) {
         <div class="banner ${d.allowed ? 'banner-success' : 'banner-warning'} mt-3">
           <div class="banner-content">
             <div>
-              <div class="banner-title">${d.allowed ? '✅ 允许转发 (Allowed)' : '🚫 被过滤规则拦截 (Blocked)'}</div>
+              <div class="banner-title">${d.allowed ? '允许转发 (Allowed)' : '被过滤规则拦截 (Blocked)'}</div>
               <div class="banner-desc">
                 原因：${escapeHtml(d.reason || '--')}
                 ${d.rule ? ` · 命中规则：<code class="mono">${escapeHtml(d.rule)}</code>` : ''}
