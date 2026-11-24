@@ -3,119 +3,346 @@ package service
 import (
 	"alert-webhook/config"
 	"alert-webhook/console"
+	"alert-webhook/store"
+	"context"
+	"fmt"
 	"log"
+	"strings"
+	"sync"
+	"time"
 )
 
-// ServiceManager 服务管理器
+// ServicesStatus aggregates runtime statuses of background monitoring services.
+type ServicesStatus struct {
+	TrafficAlert TrafficServiceStatus `json:"traffic_alert"`
+	KafkaMonitor KafkaServiceStatus   `json:"kafka_monitor"`
+}
+
+// ClickHouseTestResult represents the outcome of POST /api/test/clickhouse.
+type ClickHouseTestResult struct {
+	OK         bool   `json:"ok"`
+	LatencyMs  int64  `json:"latency_ms"`
+	RecentRows uint64 `json:"recent_rows"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// KafkaTestResult represents the outcome of POST /api/test/kafka.
+type KafkaTestResult struct {
+	OK         bool                  `json:"ok"`
+	LatencyMs  int64                 `json:"latency_ms"`
+	GroupCount int                   `json:"group_count"`
+	Groups     []ConsumerGroupDetail `json:"groups"`
+	Error      string                `json:"error,omitempty"`
+}
+
+// ServiceManager manages the lifecycle and hot-reload of background monitoring services.
 type ServiceManager struct {
+	mu                  sync.Mutex
+	cfgMgr              *config.ConfigManager
+	alertStore          *store.AlertStore
 	clickhouseService   *ClickHouseService
 	trafficAlertService *TrafficAlertService
 	kafkaMonitorService *KafkaMonitorService
+	trafficInitErr      string
+	kafkaInitErr        string
 }
 
-// NewServiceManager 创建服务管理器
-func NewServiceManager() *ServiceManager {
-	return &ServiceManager{}
+// NewServiceManager creates a new ServiceManager.
+func NewServiceManager(cfgMgr *config.ConfigManager, alertStore *store.AlertStore) *ServiceManager {
+	return &ServiceManager{
+		cfgMgr:     cfgMgr,
+		alertStore: alertStore,
+	}
 }
 
-// InitializeTrafficAlert 初始化大流量告警服务
+// InitializeAll starts enabled background services based on cfg.
+func (sm *ServiceManager) InitializeAll(cfg *config.AppConfig) {
+	sm.Reload(cfg)
+}
+
+// Reload gracefully stops running background services and restarts them with newCfg.
+func (sm *ServiceManager) Reload(newCfg *config.AppConfig) {
+	if newCfg == nil && sm.cfgMgr != nil {
+		newCfg = sm.cfgMgr.Get()
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.stopLocked()
+	sm.trafficInitErr = ""
+	sm.kafkaInitErr = ""
+
+	if newCfg == nil {
+		return
+	}
+
+	sm.initTrafficLocked(newCfg)
+	sm.initKafkaLocked(newCfg)
+}
+
+// InitializeTrafficAlert initializes only the traffic alert service using current config.
 func (sm *ServiceManager) InitializeTrafficAlert() {
-	if !config.GlobalConfig.TrafficAlert.Enabled {
+	var cfg *config.AppConfig
+	if sm.cfgMgr != nil {
+		cfg = sm.cfgMgr.Get()
+	} else {
+		cfg = config.GlobalConfig
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.initTrafficLocked(cfg)
+}
+
+// InitializeKafkaMonitor initializes only the Kafka monitor service using current config.
+func (sm *ServiceManager) InitializeKafkaMonitor() {
+	var cfg *config.AppConfig
+	if sm.cfgMgr != nil {
+		cfg = sm.cfgMgr.Get()
+	} else {
+		cfg = config.GlobalConfig
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.initKafkaLocked(cfg)
+}
+
+func (sm *ServiceManager) initTrafficLocked(cfg *config.AppConfig) {
+	if cfg == nil || !cfg.TrafficAlert.Enabled {
 		log.Println("大流量告警功能未配置启用，将不开启流量监控功能")
 		console.Warning("[Warning]", "大流量告警功能未启用，将不开启流量监控功能")
 		return
 	}
 
-	// 初始化ClickHouse服务
-	var err error
-	sm.clickhouseService, err = NewClickHouseService(config.GlobalConfig)
+	chSvc, err := NewClickHouseService(cfg)
 	if err != nil {
 		log.Printf("ClickHouse服务初始化失败: %v", err)
 		console.Error("[Error]", "ClickHouse连接失败，大流量告警功能将被禁用")
+		sm.trafficInitErr = err.Error()
 		return
 	}
 
-	// 测试ClickHouse连接
-	if err := sm.clickhouseService.TestConnection(); err != nil {
+	if err := chSvc.TestConnection(); err != nil {
 		log.Printf("ClickHouse连接测试失败: %v", err)
 		console.Error("[Error]", "ClickHouse连接测试失败，大流量告警功能将被禁用")
-		err := sm.clickhouseService.Close()
-		if err != nil {
-			return
-		}
-		sm.clickhouseService = nil
+		_ = chSvc.Close()
+		sm.trafficInitErr = err.Error()
 		return
 	}
 
-	// 启动流量告警服务
-	sm.trafficAlertService = NewTrafficAlertService(
-		sm.clickhouseService,
-		config.GlobalConfig,
-		config.Notifiers,
-		config.EnabledClients,
-	)
+	sm.clickhouseService = chSvc
+	sm.trafficAlertService = NewTrafficAlertService(chSvc, sm.cfgMgr, cfg, sm.alertStore)
 	sm.trafficAlertService.Start()
 	console.Success("[Success]", "大流量告警服务启动成功")
 }
 
-// InitializeKafkaMonitor 初始化Kafka监控服务
-func (sm *ServiceManager) InitializeKafkaMonitor() {
-	if !config.GlobalConfig.KafkaMonitor.Enabled {
+func (sm *ServiceManager) initKafkaLocked(cfg *config.AppConfig) {
+	if cfg == nil || !cfg.KafkaMonitor.Enabled {
 		log.Println("Kafka监控功能未配置启用，将不开启Kafka监控功能")
 		console.Warning("[Warning]", "Kafka监控功能未启用，将不开启Kafka监控功能")
 		return
 	}
 
-	// 验证配置
-	if config.GlobalConfig.KafkaMonitor.KafkaUIURL == "" {
-		log.Println("Kafka UI URL未配置，Kafka监控功能将被禁用")
+	if strings.TrimSpace(cfg.KafkaMonitor.KafkaUIURL) == "" {
+		msg := "Kafka UI URL未配置，Kafka监控功能将被禁用"
+		log.Println(msg)
 		console.Error("[Error]", "Kafka UI URL未配置")
+		sm.kafkaInitErr = msg
 		return
 	}
 
-	if config.GlobalConfig.KafkaMonitor.ClusterName == "" {
-		log.Println("Kafka集群名称未配置，Kafka监控功能将被禁用")
+	if strings.TrimSpace(cfg.KafkaMonitor.ClusterName) == "" {
+		msg := "Kafka集群名称未配置，Kafka监控功能将被禁用"
+		log.Println(msg)
 		console.Error("[Error]", "Kafka集群名称未配置")
+		sm.kafkaInitErr = msg
 		return
 	}
 
-	// 启动Kafka监控服务
-	sm.kafkaMonitorService = NewKafkaMonitorService(
-		config.GlobalConfig,
-		config.Notifiers,
-		config.EnabledClients,
-	)
+	sm.kafkaMonitorService = NewKafkaMonitorService(sm.cfgMgr, cfg, sm.alertStore)
 	sm.kafkaMonitorService.Start()
 	console.Success("[Success]", "Kafka监控服务启动成功")
+}
+
+func (sm *ServiceManager) stopLocked() {
+	if sm.trafficAlertService != nil {
+		sm.trafficAlertService.Stop()
+		sm.trafficAlertService = nil
+	}
+	if sm.kafkaMonitorService != nil {
+		sm.kafkaMonitorService.Stop()
+		sm.kafkaMonitorService = nil
+	}
+	if sm.clickhouseService != nil {
+		if err := sm.clickhouseService.Close(); err != nil {
+			log.Printf("关闭ClickHouse连接失败: %v", err)
+		}
+		sm.clickhouseService = nil
+	}
 }
 
 // Shutdown 优雅关闭所有服务
 func (sm *ServiceManager) Shutdown() {
 	log.Println("正在关闭服务管理器...")
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.stopLocked()
+}
 
-	// 停止流量告警服务
-	if sm.trafficAlertService != nil {
-		sm.trafficAlertService.Stop()
-		log.Println("大流量告警服务已停止")
+// IsTrafficAlertEnabled 检查大流量告警是否已启用并运行
+func (sm *ServiceManager) IsTrafficAlertEnabled() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.trafficAlertService != nil && sm.clickhouseService != nil
+}
+
+// Status returns combined runtime status of TrafficAlertService and KafkaMonitorService.
+func (sm *ServiceManager) Status() ServicesStatus {
+	var cfg *config.AppConfig
+	if sm.cfgMgr != nil {
+		cfg = sm.cfgMgr.Get()
 	}
 
-	// 停止Kafka监控服务
-	if sm.kafkaMonitorService != nil {
-		sm.kafkaMonitorService.Stop()
-		log.Println("Kafka监控服务已停止")
-	}
+	sm.mu.Lock()
+	trafficSvc := sm.trafficAlertService
+	kafkaSvc := sm.kafkaMonitorService
+	trafficErr := sm.trafficInitErr
+	kafkaErr := sm.kafkaInitErr
+	sm.mu.Unlock()
 
-	// 关闭ClickHouse连接
-	if sm.clickhouseService != nil {
-		if err := sm.clickhouseService.Close(); err != nil {
-			log.Printf("关闭ClickHouse连接失败: %v", err)
-		} else {
-			log.Println("ClickHouse连接已关闭")
+	var trafficStatus TrafficServiceStatus
+	if trafficSvc != nil {
+		trafficStatus = trafficSvc.Status()
+	} else if cfg != nil {
+		trafficStatus = TrafficServiceStatus{
+			Enabled:   cfg.TrafficAlert.Enabled,
+			Running:   false,
+			Healthy:   !cfg.TrafficAlert.Enabled && trafficErr == "",
+			LastError: trafficErr,
 		}
+		if cfg.TrafficAlert.Enabled && trafficErr == "" {
+			trafficStatus.Healthy = false
+		}
+	}
+
+	var kafkaStatus KafkaServiceStatus
+	if kafkaSvc != nil {
+		kafkaStatus = kafkaSvc.Status()
+	} else if cfg != nil {
+		kafkaStatus = KafkaServiceStatus{
+			Enabled:   cfg.KafkaMonitor.Enabled,
+			Running:   false,
+			Healthy:   !cfg.KafkaMonitor.Enabled && kafkaErr == "",
+			LastError: kafkaErr,
+		}
+		if cfg.KafkaMonitor.Enabled && kafkaErr == "" {
+			kafkaStatus.Healthy = false
+		}
+	}
+
+	return ServicesStatus{
+		TrafficAlert: trafficStatus,
+		KafkaMonitor: kafkaStatus,
 	}
 }
 
-// IsTrafficAlertEnabled 检查大流量告警是否已启用
-func (sm *ServiceManager) IsTrafficAlertEnabled() bool {
-	return sm.trafficAlertService != nil && sm.clickhouseService != nil
+// TriggerTrafficCheck triggers an immediate traffic anomaly check if the service is running.
+func (sm *ServiceManager) TriggerTrafficCheck() (TrafficServiceStatus, error) {
+	sm.mu.Lock()
+	trafficSvc := sm.trafficAlertService
+	sm.mu.Unlock()
+
+	if trafficSvc == nil {
+		return sm.Status().TrafficAlert, fmt.Errorf("大流量监控服务未运行")
+	}
+	return trafficSvc.CheckNow()
+}
+
+// TriggerKafkaCheck triggers an immediate Kafka consumer lag check if the service is running.
+func (sm *ServiceManager) TriggerKafkaCheck() (KafkaServiceStatus, error) {
+	sm.mu.Lock()
+	kafkaSvc := sm.kafkaMonitorService
+	sm.mu.Unlock()
+
+	if kafkaSvc == nil {
+		return sm.Status().KafkaMonitor, fmt.Errorf("Kafka 监控服务未运行")
+	}
+	return kafkaSvc.CheckNow()
+}
+
+// TestClickHouse validates ClickHouse connectivity and queries recent row count.
+func (sm *ServiceManager) TestClickHouse(chCfg config.ClickHouseConfig) ClickHouseTestResult {
+	start := time.Now()
+	if strings.TrimSpace(chCfg.Host) == "" {
+		return ClickHouseTestResult{
+			OK:        false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Error:     "ClickHouse host 不能为空",
+		}
+	}
+	if chCfg.Port <= 0 || chCfg.Port > 65535 {
+		return ClickHouseTestResult{
+			OK:        false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Error:     "ClickHouse 端口无效",
+		}
+	}
+
+	tmpCfg := &config.AppConfig{ClickHouse: chCfg}
+	svc, err := NewClickHouseService(tmpCfg)
+	if err != nil {
+		return ClickHouseTestResult{
+			OK:        false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Error:     err.Error(),
+		}
+	}
+	defer func() {
+		_ = svc.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := svc.TestConnectionWithCount(ctx)
+	if err != nil {
+		return ClickHouseTestResult{
+			OK:        false,
+			LatencyMs: time.Since(start).Milliseconds(),
+			Error:     err.Error(),
+		}
+	}
+
+	return ClickHouseTestResult{
+		OK:         true,
+		LatencyMs:  time.Since(start).Milliseconds(),
+		RecentRows: rows,
+		Message:    fmt.Sprintf("连接成功，最近 1 分钟有 %d 条访问日志", rows),
+	}
+}
+
+// TestKafkaUI tests connectivity to Kafka UI and returns discovered consumer groups.
+func (sm *ServiceManager) TestKafkaUI(kCfg config.KafkaMonitorConfig) KafkaTestResult {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	groups, err := FetchKafkaConsumerGroups(ctx, kafkaHTTPClient, kCfg)
+	if err != nil {
+		return KafkaTestResult{
+			OK:         false,
+			LatencyMs:  time.Since(start).Milliseconds(),
+			GroupCount: 0,
+			Groups:     []ConsumerGroupDetail{},
+			Error:      err.Error(),
+		}
+	}
+
+	return KafkaTestResult{
+		OK:         true,
+		LatencyMs:  time.Since(start).Milliseconds(),
+		GroupCount: len(groups),
+		Groups:     groups,
+	}
 }

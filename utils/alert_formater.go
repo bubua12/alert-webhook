@@ -4,14 +4,33 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/alertmanager/template"
 )
 
+var (
+	shanghaiOnce sync.Once
+	shanghaiLoc  *time.Location
+)
+
+// GetShanghaiLocation safely returns the Asia/Shanghai location, falling back to UTC+8 if tzdata is unavailable.
+func GetShanghaiLocation() *time.Location {
+	shanghaiOnce.Do(func() {
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil || loc == nil {
+			loc = time.FixedZone("CST", 8*3600)
+		}
+		shanghaiLoc = loc
+	})
+	return shanghaiLoc
+}
+
 func AlertFormatFeishu(data template.Data) string {
 	var builder strings.Builder
 	alertCount := len(data.Alerts)
+	loc := GetShanghaiLocation()
 
 	if data.Status == "firing" {
 		builder.WriteString("**🔥 Prometheus告警通知**\n")
@@ -27,7 +46,7 @@ func AlertFormatFeishu(data template.Data) string {
 			builder.WriteString(fmt.Sprintf("> **实例:** %s\n", alert.Labels["instance"]))
 			builder.WriteString(fmt.Sprintf("> **摘要:** %s\n", alert.Annotations["summary"]))
 			builder.WriteString(fmt.Sprintf("> **描述:** %s\n", alert.Annotations["description"]))
-			builder.WriteString(fmt.Sprintf("> **触发时间:** %s\n", alert.StartsAt.Format("2006-01-02 15:04:05")))
+			builder.WriteString(fmt.Sprintf("> **触发时间:** %s\n", alert.StartsAt.In(loc).Format("2006-01-02 15:04:05")))
 		}
 	} else if data.Status == "resolved" {
 		builder.WriteString("**✅ Prometheus告警恢复**\n")
@@ -37,7 +56,7 @@ func AlertFormatFeishu(data template.Data) string {
 				builder.WriteString("> ---\n")
 			}
 			builder.WriteString(fmt.Sprintf("> **告警名称:** %s\n", alert.Labels["alertname"]))
-			builder.WriteString(fmt.Sprintf("> **恢复时间:** %s\n", alert.EndsAt.Format("2006-01-02 15:04:05")))
+			builder.WriteString(fmt.Sprintf("> **恢复时间:** %s\n", alert.EndsAt.In(loc).Format("2006-01-02 15:04:05")))
 		}
 	}
 	return builder.String()
@@ -46,7 +65,7 @@ func AlertFormatFeishu(data template.Data) string {
 func AlertFormatDingtalk(data template.Data) string {
 	var builder strings.Builder
 	alertCount := len(data.Alerts)
-	loc, _ := time.LoadLocation("Asia/Shanghai")
+	loc := GetShanghaiLocation()
 
 	if data.Status == "firing" {
 		builder.WriteString("### 🔥 Prometheus告警通知\n\n")
@@ -88,7 +107,7 @@ func AlertFormatDingtalk(data template.Data) string {
 func AlertFormatWechat(data template.Data) string {
 	var msg string
 	alertCount := len(data.Alerts)
-	loc, _ := time.LoadLocation("Asia/Shanghai")
+	loc := GetShanghaiLocation()
 
 	if data.Status == "firing" {
 		// 获取最高严重级别的告警来决定标题颜色

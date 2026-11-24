@@ -2,46 +2,264 @@ package service
 
 import (
 	"alert-webhook/config"
+	"alert-webhook/store"
+	"context"
+	"crypto/subtle"
 	"errors"
+	"io/fs"
 	"log"
+	"mime"
 	"net/http"
+	"os"
+	"path"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// ServerManager HTTP服务器管理器 用于启动监听端口，接收AlertManager推送的告警请求
+var (
+	uiFSMu sync.RWMutex
+	uiFS   fs.FS
+)
+
+// RegisterUIFS registers the embedded frontend filesystem served by ServerManager.
+func RegisterUIFS(f fs.FS) {
+	uiFSMu.Lock()
+	uiFS = f
+	uiFSMu.Unlock()
+}
+
+func getUIFS() fs.FS {
+	uiFSMu.RLock()
+	f := uiFS
+	uiFSMu.RUnlock()
+	return f
+}
+
+// ServerManager HTTP服务器管理器 用于启动监听端口，接收AlertManager推送与控制台API请求
 type ServerManager struct {
-	server *http.Server
+	mu         sync.Mutex
+	server     *http.Server
+	cfgMgr     *config.ConfigManager
+	alertStore *store.AlertStore
+	logBuffer  *store.LogBuffer
+	svcMgr     *ServiceManager
+	startedAt  time.Time
 }
 
 // NewServerManager 创建服务器管理器
-func NewServerManager() *ServerManager {
-	return &ServerManager{}
+func NewServerManager(cfgMgr *config.ConfigManager, alertStore *store.AlertStore, logBuffer *store.LogBuffer, svcMgr *ServiceManager) *ServerManager {
+	return &ServerManager{
+		cfgMgr:     cfgMgr,
+		alertStore: alertStore,
+		logBuffer:  logBuffer,
+		svcMgr:     svcMgr,
+		startedAt:  time.Now(),
+	}
 }
 
-// StartWebhookServer 启动webhook服务器
-func (sm *ServerManager) StartWebhookServer(addr string) error {
-	router := gin.New()
-	router.POST("/webhook-alert", GinAlertHandler(config.Notifiers, config.EnabledClients, config.GlobalConfig))
+// AuthMiddleware protects /api/* endpoints when server.auth_token is configured.
+func AuthMiddleware(cfgMgr *config.ConfigManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if cfgMgr == nil {
+			c.Next()
+			return
+		}
+		expected := cfgMgr.Get().Server.AuthToken
+		if expected == "" {
+			c.Next()
+			return
+		}
 
-	sm.server = &http.Server{
-		Addr:    addr,
-		Handler: router,
+		provided := strings.TrimSpace(c.GetHeader("X-API-Token"))
+		if provided == "" {
+			authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+			if len(authHeader) >= 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
+				provided = strings.TrimSpace(authHeader[7:])
+			}
+		}
+
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":         "unauthorized",
+				"auth_required": true,
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// BuildRouter constructs the Gin engine with all webhook, health, REST API, and static UI routes.
+func (sm *ServerManager) BuildRouter() *gin.Engine {
+	if os.Getenv("GIN_MODE") != gin.DebugMode {
+		gin.SetMode(gin.ReleaseMode)
 	}
 
+	router := gin.New()
+	router.Use(gin.Recovery())
+
+	apiHandler := NewAPIHandler(sm.cfgMgr, sm.alertStore, sm.logBuffer, sm.svcMgr, sm.startedAt)
+
+	// Public operational & webhook endpoints (never gated by auth token)
+	router.POST("/webhook-alert", GinAlertHandler(sm.cfgMgr, sm.alertStore))
+	router.GET("/healthz", apiHandler.HandleHealthz)
+	router.GET("/readyz", apiHandler.HandleReadyz)
+
+	// Control-plane REST API
+	api := router.Group("/api")
+	api.Use(AuthMiddleware(sm.cfgMgr))
+	{
+		api.GET("/overview", apiHandler.HandleOverview)
+		api.GET("/alerts", apiHandler.HandleListAlerts)
+		api.DELETE("/alerts", apiHandler.HandleClearAlerts)
+		api.GET("/config", apiHandler.HandleGetConfig)
+		api.PUT("/config", apiHandler.HandleUpdateConfig)
+		api.PUT("/config/yaml", apiHandler.HandleUpdateConfigYAML)
+		api.POST("/config/reload", apiHandler.HandleReloadConfig)
+		api.POST("/test/notifier", apiHandler.HandleTestNotifier)
+		api.POST("/test/clickhouse", apiHandler.HandleTestClickHouse)
+		api.POST("/test/kafka", apiHandler.HandleTestKafka)
+		api.POST("/filter/test", apiHandler.HandleTestFilter)
+		api.POST("/simulate", apiHandler.HandleSimulate)
+		api.POST("/services/traffic/check", apiHandler.HandleTriggerTrafficCheck)
+		api.POST("/services/kafka/check", apiHandler.HandleTriggerKafkaCheck)
+		api.GET("/logs", apiHandler.HandleGetLogs)
+	}
+
+	// Embedded Web UI assets (never use http.FileServer at '/' to avoid redirect loops)
+	router.GET("/", func(c *gin.Context) {
+		sm.serveIndex(c)
+	})
+	router.GET("/css/*filepath", func(c *gin.Context) {
+		sm.serveStaticSubdir(c, "css", c.Param("filepath"))
+	})
+	router.GET("/js/*filepath", func(c *gin.Context) {
+		sm.serveStaticSubdir(c, "js", c.Param("filepath"))
+	})
+	router.GET("/favicon.ico", func(c *gin.Context) {
+		if !sm.isUIActive() {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		if data, err := fs.ReadFile(getUIFS(), "favicon.ico"); err == nil {
+			c.Data(http.StatusOK, "image/x-icon", data)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	router.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") || c.Request.URL.Path == "/api" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		if sm.isUIActive() {
+			sm.serveIndex(c)
+			return
+		}
+		c.Status(http.StatusNotFound)
+	})
+
+	return router
+}
+
+func (sm *ServerManager) isUIActive() bool {
+	if getUIFS() == nil {
+		return false
+	}
+	if sm.cfgMgr != nil {
+		return sm.cfgMgr.Get().Server.IsUIEnabled()
+	}
+	return true
+}
+
+func (sm *ServerManager) serveIndex(c *gin.Context) {
+	if !sm.isUIActive() {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	data, err := fs.ReadFile(getUIFS(), "index.html")
+	if err != nil {
+		c.String(http.StatusInternalServerError, "无法加载控制台页面")
+		return
+	}
+	c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+}
+
+func (sm *ServerManager) serveStaticSubdir(c *gin.Context, subdir, rawSubpath string) {
+	if !sm.isUIActive() {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	if strings.Contains(rawSubpath, "..") {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	cleaned := path.Clean("/" + rawSubpath)
+	rel := strings.TrimPrefix(cleaned, "/")
+	if rel == "" || rel == "." {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	assetPath := path.Join(subdir, rel)
+	data, err := fs.ReadFile(getUIFS(), assetPath)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	var contentType string
+	switch strings.ToLower(path.Ext(assetPath)) {
+	case ".css":
+		contentType = "text/css; charset=utf-8"
+	case ".js", ".mjs":
+		contentType = "application/javascript; charset=utf-8"
+	default:
+		contentType = mime.TypeByExtension(path.Ext(assetPath))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+	}
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// StartWebhookServer 启动webhook与控制台HTTP服务器
+func (sm *ServerManager) StartWebhookServer(addr string) error {
+	router := sm.BuildRouter()
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	sm.mu.Lock()
+	sm.server = srv
+	sm.mu.Unlock()
+
 	log.Printf("Alert Webhook服务启动于 %s\n", addr)
-	if err := sm.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Alert Webhook服务启动失败, 错误详细信息: %s\n", err)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
 }
 
-// Shutdown 优雅关闭服务器
+// Shutdown 优雅关闭服务器（5秒超时）
 func (sm *ServerManager) Shutdown() error {
-	if sm.server != nil {
-		log.Println("正在关闭HTTP服务器...")
-		return sm.server.Close()
+	sm.mu.Lock()
+	srv := sm.server
+	sm.mu.Unlock()
+
+	if srv == nil {
+		return nil
 	}
-	return nil
+	log.Println("正在关闭HTTP服务器...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return srv.Shutdown(ctx)
 }

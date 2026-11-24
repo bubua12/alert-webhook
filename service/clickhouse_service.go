@@ -5,11 +5,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
+
+const clickhouseQueryTimeout = 15 * time.Second
 
 // NginxAccessLog Nginx访问日志结构体
 type NginxAccessLog struct {
@@ -65,41 +68,64 @@ type TrafficStats struct {
 type ClickHouseService struct {
 	conn   clickhouse.Conn
 	config *config.AppConfig
+	dbName string
+}
+
+func resolveClickHouseDB(db string) (string, error) {
+	trimmed := strings.TrimSpace(db)
+	if trimmed == "" {
+		trimmed = "nginxlogs"
+	}
+	if !config.IsValidClickHouseIdentifier(trimmed) {
+		return "", fmt.Errorf("非法的 ClickHouse 数据库名称: %q（仅允许字母、数字、下划线）", trimmed)
+	}
+	return trimmed, nil
 }
 
 // NewClickHouseService 创建新的ClickHouse服务实例
 func NewClickHouseService(cfg *config.AppConfig) (*ClickHouseService, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("ClickHouse 配置不能为空")
+	}
+	dbName, err := resolveClickHouseDB(cfg.ClickHouse.Database)
+	if err != nil {
+		return nil, err
+	}
+
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", cfg.ClickHouse.Host, cfg.ClickHouse.Port)},
 		Auth: clickhouse.Auth{
-			Database: cfg.ClickHouse.Database,
+			Database: dbName,
 			Username: cfg.ClickHouse.Username,
 			Password: cfg.ClickHouse.Password,
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
 		},
-		DialTimeout:      time.Duration(10) * time.Second,
+		DialTimeout:      10 * time.Second,
 		MaxOpenConns:     5,
 		MaxIdleConns:     5,
-		ConnMaxLifetime:  time.Duration(10) * time.Minute,
+		ConnMaxLifetime:  10 * time.Minute,
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("连接ClickHouse失败: %w", err)
 	}
 
-	// 测试连接
-	if err := conn.Ping(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), clickhouseQueryTimeout)
+	defer cancel()
+
+	if err := conn.Ping(ctx); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("ClickHouse连接测试失败: %w", err)
 	}
 
-	log.Printf("ClickHouse连接成功: %s:%d/%s", cfg.ClickHouse.Host, cfg.ClickHouse.Port, cfg.ClickHouse.Database)
+	log.Printf("ClickHouse连接成功: %s:%d/%s", cfg.ClickHouse.Host, cfg.ClickHouse.Port, dbName)
 
 	return &ClickHouseService{
 		conn:   conn,
-		config: cfg,
+		config: cfg.Clone(),
+		dbName: dbName,
 	}, nil
 }
 
@@ -111,18 +137,22 @@ func (c *ClickHouseService) Close() error {
 	return nil
 }
 
+// tableName returns the safely backtick-quoted <db>.nginx_access table reference.
+func (c *ClickHouseService) tableName() string {
+	return fmt.Sprintf("`%s`.nginx_access", c.dbName)
+}
+
 // CheckTrafficAnomalies 检查流量异常
 func (c *ClickHouseService) CheckTrafficAnomalies() ([]TrafficStats, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), clickhouseQueryTimeout)
+	defer cancel()
 
-	// 获取配置参数
 	timeWindow := c.config.TrafficAlert.TimeWindow
 	requestThreshold := c.config.TrafficAlert.RequestSizeThreshold
 	responseThreshold := c.config.TrafficAlert.ResponseSizeThreshold
 	countThreshold := c.config.TrafficAlert.CountThreshold
 
-	// 检测SQL查询逻辑
-	query := `
+	query := fmt.Sprintf(`
 		SELECT 
 			domain,
 			top_path,
@@ -133,13 +163,13 @@ func (c *ClickHouseService) CheckTrafficAnomalies() ([]TrafficStats, error) {
 			max(response_length) as max_response_size,
 			countIf(request_length > ?) as large_request_count,
 			countIf(response_length > ?) as large_response_count
-		FROM nginxlogs.nginx_access 
+		FROM %s 
 		WHERE timestamp >= now() - INTERVAL ? MINUTE
 		GROUP BY domain, top_path
 		HAVING large_request_count >= ? OR large_response_count >= ?
 		ORDER BY total_count DESC
 		LIMIT 100
-	`
+	`, c.tableName())
 
 	rows, err := c.conn.Query(ctx, query,
 		requestThreshold,
@@ -152,9 +182,8 @@ func (c *ClickHouseService) CheckTrafficAnomalies() ([]TrafficStats, error) {
 		return nil, fmt.Errorf("查询流量异常数据失败: %w", err)
 	}
 	defer func(rows driver.Rows) {
-		err := rows.Close()
-		if err != nil {
-			log.Fatalf("[CheckTrafficAnomalies]rows.Close()异常，错误信息: %s", err)
+		if err := rows.Close(); err != nil {
+			log.Printf("[CheckTrafficAnomalies] rows.Close() 异常: %v", err)
 		}
 	}(rows)
 
@@ -187,24 +216,25 @@ func (c *ClickHouseService) CheckTrafficAnomalies() ([]TrafficStats, error) {
 
 // GetRecentLargeRequests 获取最近的大请求详情
 func (c *ClickHouseService) GetRecentLargeRequests(domain, topPath string, limit int) ([]NginxAccessLog, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), clickhouseQueryTimeout)
+	defer cancel()
 
 	requestThreshold := c.config.TrafficAlert.RequestSizeThreshold
 	responseThreshold := c.config.TrafficAlert.ResponseSizeThreshold
 	timeWindow := c.config.TrafficAlert.TimeWindow
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT 
 			timestamp, server_ip, domain, request_method, status, top_path, path,
 			request_length, response_length, client_ip, responsetime
-		FROM nginxlogs.nginx_access 
+		FROM %s 
 		WHERE timestamp >= now() - INTERVAL ? MINUTE
 			AND domain = ?
 			AND top_path = ?
 			AND (request_length > ? OR response_length > ?)
 		ORDER BY timestamp DESC
 		LIMIT ?
-	`
+	`, c.tableName())
 
 	rows, err := c.conn.Query(ctx, query,
 		timeWindow,
@@ -218,9 +248,8 @@ func (c *ClickHouseService) GetRecentLargeRequests(domain, topPath string, limit
 		return nil, fmt.Errorf("查询大请求详情失败: %w", err)
 	}
 	defer func(rows driver.Rows) {
-		err := rows.Close()
-		if err != nil {
-			log.Fatalf("[GetRecentLargeRequests]rows.Close()异常，错误信息: %s", err)
+		if err := rows.Close(); err != nil {
+			log.Printf("[GetRecentLargeRequests] rows.Close() 异常: %v", err)
 		}
 	}(rows)
 
@@ -245,20 +274,38 @@ func (c *ClickHouseService) GetRecentLargeRequests(domain, topPath string, limit
 		results = append(results, nginxLog)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历大请求详情失败: %w", err)
+	}
+
 	return results, nil
 }
 
 // TestConnection 测试ClickHouse连接
 func (c *ClickHouseService) TestConnection() error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), clickhouseQueryTimeout)
+	defer cancel()
 
-	// 执行简单查询测试连接
-	var count uint64
-	err := c.conn.QueryRow(ctx, `SELECT count(*) FROM nginxlogs.nginx_access WHERE timestamp >= now() - INTERVAL 1 MINUTE`).Scan(&count)
+	count, err := c.TestConnectionWithCount(ctx)
 	if err != nil {
-		return fmt.Errorf("ClickHouse连接测试失败: %w", err)
+		return err
 	}
-
 	log.Printf("ClickHouse连接测试成功，最近1分钟有 %d 条记录", count)
 	return nil
+}
+
+// TestConnectionWithCount queries recent row count in `<db>.nginx_access` and returns it.
+func (c *ClickHouseService) TestConnectionWithCount(ctx context.Context) (uint64, error) {
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), clickhouseQueryTimeout)
+		defer cancel()
+	}
+
+	var count uint64
+	query := fmt.Sprintf("SELECT count(*) FROM %s WHERE timestamp >= now() - INTERVAL 1 MINUTE", c.tableName())
+	if err := c.conn.QueryRow(ctx, query).Scan(&count); err != nil {
+		return 0, fmt.Errorf("ClickHouse连接测试失败: %w", err)
+	}
+	return count, nil
 }
