@@ -1,0 +1,16 @@
+.git
+.idea
+.env
+.DS_Store
+
+logs
+data
+conf
+config.yaml
+config/*.yaml
+config/*.yml
+
+alert-webhook
+*.exe
+*.pid
+*.log

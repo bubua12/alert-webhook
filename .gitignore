@@ -1,7 +1,16 @@
-# logs && config
+# logs, data & runtime config
 logs
+data/
+conf/
 config.yaml
 
-# binary file
+# environment & IDE
+.env
+.DS_Store
+.idea/
+
+# binary & runtime artifacts
 alert-webhook
 *.exe
+*.pid
+*.log

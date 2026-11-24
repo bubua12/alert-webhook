@@ -1,21 +1,40 @@
+# Alert Webhook Notifier v1.2.0 示例配置文件
+# 说明：
+# 1. 支持零配置启动：即使缺少或留空部分配置，服务也可正常启动，随后可通过 Web 控制台 (http://localhost:18082) 在线配置并热生效。
+# 2. 完全向后兼容 v1.0/v1.1 配置文件结构；所有选项也可通过 ALERT_WEBHOOK_* 环境变量覆盖。
+
 server:
+  # HTTP 服务监听地址（Webhook 接收端口与 Web 控制台共用）
   port: "0.0.0.0:18082"
+  # 是否启用内置 Web 控制台（默认 true；关闭后仅保留 /webhook-alert、/healthz、/readyz 与 /api/*）
+  ui_enabled: true
+  # 可选：Web 控制台与 /api/* 接口访问令牌（留空表示不启用鉴权）
+  auth_token: ""
+  # 告警审计历史 (alerts.jsonl) 存储目录
+  data_dir: "./data"
+  # 日志文件目录（日志同时输出至标准输出 stdout，便于 docker logs 查看）
+  log_dir: "./logs"
 
-# 消息接收客户端，支持配置数组同时发送
-client:
-  - wechat
-#  - dingtalk
-#  - feishu
+# 启用的通知客户端列表，支持同时配置多个平台: wechat / dingtalk / feishu
+# 初次启动可留空 []，稍后在 Web 控制台「配置中心」中启用并测试连通性
+client: []
+  # - wechat
+  # - dingtalk
+  # - feishu
 
+# 各通知渠道 Webhook 配置
 notifiers:
   wechat:
-    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
+    # 示例: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx
+    webhook_url: ""
   dingtalk:
-    webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
+    # 示例: https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx
+    webhook_url: ""
   feishu:
-    webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    # 示例: https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    webhook_url: ""
 
-# ClickHouse数据库配置（大流量告警功能需要）
+# ClickHouse 数据库配置（启用大流量告警功能时需要）
 clickhouse:
   host: "localhost"
   port: 9000
@@ -23,74 +42,61 @@ clickhouse:
   username: "default"
   password: ""
 
-# 大流量告警配置
+# 大流量告警配置（基于 ClickHouse 中的 Nginx 访问日志）
 traffic_alert:
   # 是否启用大流量告警
   enabled: false
-  # 检查间隔（秒）
+  # 检查间隔（秒，最小 5 秒）
   check_interval: 300
   # 请求大小阈值（字节），超过此值视为大请求
-  request_size_threshold: 1048576   # 1MB
-  # 响应大小阈值（字节），超过此值视为大响应  
-  response_size_threshold: 5242880  # 5MB
-  # 时间窗口（分钟），检查此时间段内的流量
+  request_size_threshold: 1048576    # 1MB
+  # 响应大小阈值（字节），超过此值视为大响应
+  response_size_threshold: 5242880   # 5MB
+  # 统计时间窗口（分钟）
   time_window: 10
   # 触发告警的大请求/响应数量阈值
   count_threshold: 5
 
-# Kafka消费者组监控配置
+# Kafka 消费者组积压监控配置（基于 Kafka UI API）
 kafka_monitor:
-  # 是否启用Kafka监控
+  # 是否启用 Kafka 监控
   enabled: false
-  # Kafka UI的API地址（不包含路径）
+  # Kafka UI 服务地址（不包含路径）
   kafka_ui_url: "http://localhost:8090"
-  # Kafka集群名称（在Kafka UI中配置的集群名称）
+  # Kafka 集群名称（需与 Kafka UI 中配置的集群名称一致）
   cluster_name: "local-kafka"
-  # 检查间隔（秒）
+  # 检查间隔（秒，最小 5 秒）
   check_interval: 60
   # 消费者组积压阈值（消息数量）
   consumer_lag_threshold: 100000
-  # 需要监控的消费者组列表（为空则监控所有）
-  monitored_groups:
-#    - "order-group-01"
-#    - "order-group-02"
-  # 忽略的消费者组列表
-  ignored_groups:
-#    - "consumer-group-01"
+  # 指定监控的消费者组列表（留空 [] 表示监控全部消费者组）
+  monitored_groups: []
+    # - "order-group-01"
+    # - "order-group-02"
+  # 忽略的消费者组列表（优先级高于 monitored_groups）
+  ignored_groups: []
+    # - "consumer-group-01"
 
 # 告警过滤规则配置（可选）
-filter:
-  # 基于告警名称的过滤规则
-  alert_name:
-    # 包含规则：只有匹配这些规则的告警才会被发送（支持通配符*）
-    include:
-#      - "HighCPU*"              # 匹配以HighCPU开头的告警
-#      - "*Memory*"              # 匹配包含Memory的告警
-#      - "DiskSpaceLow"          # 精确匹配
-#      - "DatabaseConnectionError" # 精确匹配
-      # - "*"                   # 匹配所有告警（如果需要允许所有告警名称）
-    # 排除规则：匹配这些规则的告警不会被发送（优先级高于include）
-    exclude:
-#      - "*Test*"                # 排除包含Test的告警
-#      - "DebugAlert"            # 排除调试告警
-#      - "InfoInhibitor"         # 排除信息抑制告警
-      
-  # 基于告警级别的过滤规则  
-  severity:
-    # 包含规则：只发送这些级别的告警
-    include:
-#      - "emergency"             # 紧急告警
-#      - "critical"              # 严重告警
-#      - "warning"               # 警告告警
-      # - "info"                 # 信息告警（可选）
-    # 排除规则：不发送这些级别的告警
-    exclude:
-      - "info"                  # 排除信息级别告警
-      - "none"                  # 排除none级别
-      
 # 说明：
-# 1. 如果不配置filter部分，默认会发送所有告警（除了severity为none的）
-# 2. 支持通配符：* 匹配任意字符，如 "High*" 匹配以High开头的所有告警名称
-# 3. exclude规则优先级高于include规则
-# 4. alert_name和severity规则都必须通过，告警才会被发送
-# 5. 可以只配置其中一种过滤规则，另一种不配置表示不限制
+# 1. 支持 * 通配符，如 "High*" 匹配前缀、"*Test*" 匹配包含
+# 2. exclude 规则优先级高于 include 规则
+# 3. alert_name 与 severity 两个维度需同时通过才会推送
+filter:
+  alert_name:
+    include: []
+      # - "HighCPU*"
+      # - "*Memory*"
+      # - "DiskSpaceLow"
+    exclude: []
+      # - "*Test*"
+      # - "DebugAlert"
+      # - "InfoInhibitor"
+  severity:
+    include: []
+      # - "emergency"
+      # - "critical"
+      # - "warning"
+    exclude:
+      - "info"
+      - "none"
