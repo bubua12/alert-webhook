@@ -4,7 +4,9 @@ import (
 	"alert-webhook/config"
 	"alert-webhook/utils"
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -13,21 +15,26 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
-const defaultAlertStoreCapacity = 1000
+const (
+	defaultAlertStoreCapacity = 1000
+	defaultCompactMaxBytes    = 5 * 1024 * 1024 // 5 MB
+)
 
 // DeliveryResult records the outcome of sending an alert to one notification channel target.
 type DeliveryResult struct {
-	Client     string `json:"client"`
-	Target     string `json:"target,omitempty"`
-	Success    bool   `json:"success"`
-	StatusCode int    `json:"status_code,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
-	Batches    int    `json:"batches,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Response   string `json:"response,omitempty"`
+	Client      string `json:"client"`
+	Target      string `json:"target,omitempty"`
+	Success     bool   `json:"success"`
+	RateLimited bool   `json:"rate_limited,omitempty"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	DurationMs  int64  `json:"duration_ms"`
+	Batches     int    `json:"batches,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Response    string `json:"response,omitempty"`
 }
 
 // AlertRecord captures a normalized alert event and its delivery outcomes.
@@ -124,12 +131,15 @@ type OverviewStats struct {
 
 // AlertStore stores recent alert records in a thread-safe ring buffer backed by optional JSONL persistence.
 type AlertStore struct {
-	mu       sync.RWMutex
-	capacity int
-	records  []AlertRecord
-	filePath string
-	persist  bool
-	seq      uint64
+	mu              sync.RWMutex
+	capacity        int
+	records         []AlertRecord
+	filePath        string
+	persist         bool
+	seq             uint64
+	diskLines       int
+	diskBytes       int64
+	compactMaxBytes int64
 }
 
 // NewAlertStore initializes an AlertStore with the given dataDir and ring capacity (defaults to 1000).
@@ -138,8 +148,9 @@ func NewAlertStore(dataDir string, capacity int) *AlertStore {
 		capacity = defaultAlertStoreCapacity
 	}
 	s := &AlertStore{
-		capacity: capacity,
-		records:  make([]AlertRecord, 0, min(capacity, 64)),
+		capacity:        capacity,
+		records:         make([]AlertRecord, 0, min(capacity, 64)),
+		compactMaxBytes: defaultCompactMaxBytes,
 	}
 
 	dir := strings.TrimSpace(dataDir)
@@ -159,6 +170,10 @@ func NewAlertStore(dataDir string, capacity int) *AlertStore {
 	return s
 }
 
+func (s *AlertStore) compactMaxLines() int {
+	return max(s.capacity*2, 10)
+}
+
 func (s *AlertStore) loadFromFile() {
 	f, err := os.Open(s.filePath)
 	if err != nil {
@@ -169,18 +184,24 @@ func (s *AlertStore) loadFromFile() {
 	}
 	defer f.Close()
 
+	if info, statErr := f.Stat(); statErr == nil {
+		s.diskBytes = info.Size()
+	}
+
 	scanner := bufio.NewScanner(f)
 	// Allow up to 1MB lines for large alert payloads
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	loaded := make([]AlertRecord, 0)
 	lineNum := 0
+	nonEmptyLines := 0
 	for scanner.Scan() {
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
+		nonEmptyLines++
 		var rec AlertRecord
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			log.Printf("[Warn] 跳过第 %d 行损坏的告警记录: %v", lineNum, err)
@@ -193,10 +214,15 @@ func (s *AlertStore) loadFromFile() {
 		log.Printf("[Warn] 读取历史告警文件异常: %v", err)
 	}
 
+	s.diskLines = nonEmptyLines
 	if len(loaded) > s.capacity {
 		loaded = loaded[len(loaded)-s.capacity:]
 	}
 	s.records = append(s.records, loaded...)
+
+	if s.diskLines > s.compactMaxLines() || (s.compactMaxBytes > 0 && s.diskBytes > s.compactMaxBytes) {
+		s.compactFileLocked()
+	}
 }
 
 func normalizeAlertRecord(rec *AlertRecord) {
@@ -233,42 +259,88 @@ func cloneAlertRecord(rec AlertRecord) AlertRecord {
 
 // Add appends an AlertRecord to the ring buffer and persists it to alerts.jsonl if enabled.
 func (s *AlertStore) Add(rec AlertRecord) AlertRecord {
+	res := s.AddBatch([]AlertRecord{rec})
+	return res[0]
+}
+
+// AddBatch appends multiple AlertRecords under a single lock acquisition and single disk write/compaction.
+func (s *AlertStore) AddBatch(recs []AlertRecord) []AlertRecord {
+	if len(recs) == 0 {
+		return nil
+	}
+	if len(recs) > s.capacity {
+		recs = recs[len(recs)-s.capacity:]
+	}
+
 	loc := utils.GetShanghaiLocation()
+	now := time.Now()
+	nowStr := now.In(loc).Format(time.RFC3339)
+	nowNano := now.UnixNano()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.seq++
-	if rec.ID == "" {
-		rec.ID = fmt.Sprintf("alt-%d-%d", time.Now().UnixNano(), s.seq)
+	storedBatch := make([]AlertRecord, len(recs))
+	out := make([]AlertRecord, len(recs))
+	for i, rec := range recs {
+		s.seq++
+		if rec.ID == "" {
+			rec.ID = fmt.Sprintf("alt-%d-%d", nowNano, s.seq)
+		}
+		if rec.Timestamp == "" {
+			rec.Timestamp = nowStr
+		}
+		normalizeAlertRecord(&rec)
+		stored := cloneAlertRecord(rec)
+		storedBatch[i] = stored
+		out[i] = cloneAlertRecord(stored)
 	}
-	if rec.Timestamp == "" {
-		rec.Timestamp = time.Now().In(loc).Format(time.RFC3339)
-	}
-	normalizeAlertRecord(&rec)
-	stored := cloneAlertRecord(rec)
 
-	if len(s.records) >= s.capacity {
-		copy(s.records, s.records[1:])
-		s.records[len(s.records)-1] = stored
+	total := len(s.records) + len(storedBatch)
+	if total <= s.capacity {
+		s.records = append(s.records, storedBatch...)
 	} else {
-		s.records = append(s.records, stored)
+		overflow := total - s.capacity
+		if overflow >= len(s.records) {
+			keep := storedBatch[len(storedBatch)-min(len(storedBatch), s.capacity):]
+			s.records = append(s.records[:0], keep...)
+		} else {
+			remain := len(s.records) - overflow
+			copy(s.records, s.records[overflow:])
+			s.records = append(s.records[:remain], storedBatch...)
+		}
 	}
 
 	if s.persist && s.filePath != "" {
-		s.appendJSONL(stored)
+		if s.diskLines+len(storedBatch) > s.compactMaxLines() {
+			s.compactFileLocked()
+		} else {
+			var buf bytes.Buffer
+			writtenLines := 0
+			for _, rec := range storedBatch {
+				data, err := json.Marshal(rec)
+				if err != nil {
+					log.Printf("[Warn] 序列化告警记录失败: %v", err)
+					continue
+				}
+				buf.Write(data)
+				buf.WriteByte('\n')
+				writtenLines++
+			}
+			if writtenLines > 0 {
+				if s.compactMaxBytes > 0 && s.diskBytes+int64(buf.Len()) > s.compactMaxBytes {
+					s.compactFileLocked()
+				} else {
+					s.appendBytesLocked(buf.Bytes(), writtenLines)
+				}
+			}
+		}
 	}
 
-	return cloneAlertRecord(stored)
+	return out
 }
 
-func (s *AlertStore) appendJSONL(rec AlertRecord) {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		log.Printf("[Warn] 序列化告警记录失败: %v", err)
-		return
-	}
-
+func (s *AlertStore) appendBytesLocked(data []byte, lines int) {
 	f, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Printf("[Warn] 打开告警持久化文件 %s 失败: %v", s.filePath, err)
@@ -276,9 +348,81 @@ func (s *AlertStore) appendJSONL(rec AlertRecord) {
 	}
 	defer f.Close()
 
-	if _, err := f.Write(append(data, '\n')); err != nil {
+	if _, err := f.Write(data); err != nil {
 		log.Printf("[Warn] 写入告警持久化文件失败: %v", err)
+		return
 	}
+	s.diskLines += lines
+	s.diskBytes += int64(len(data))
+}
+
+func (s *AlertStore) compactFileLocked() {
+	if !s.persist || s.filePath == "" {
+		return
+	}
+
+	var buf bytes.Buffer
+	lines := 0
+	for _, rec := range s.records {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			log.Printf("[Warn] 压缩序列化告警记录失败: %v", err)
+			continue
+		}
+		buf.Write(data)
+		buf.WriteByte('\n')
+		lines++
+	}
+
+	if err := writeFileAtomic(s.filePath, buf.Bytes()); err != nil {
+		log.Printf("[Warn] 压缩告警持久化文件 %s 失败: %v", s.filePath, err)
+		return
+	}
+	s.diskLines = lines
+	s.diskBytes = int64(buf.Len())
+}
+
+func writeFileAtomic(targetPath string, data []byte) error {
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	tmpFile, err := os.CreateTemp(dir, ".alerts-*.tmp")
+	if err != nil {
+		return os.WriteFile(targetPath, data, 0644)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0644); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		if errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EBUSY) {
+			return os.WriteFile(targetPath, data, 0644)
+		}
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 // Query filters and paginates records in reverse-chronological order (newest first).
@@ -301,8 +445,12 @@ func (s *AlertStore) Query(q AlertQuery) AlertQueryResult {
 	severityFilter := strings.ToLower(strings.TrimSpace(q.Severity))
 	keyword := strings.ToLower(strings.TrimSpace(q.Q))
 
+	start := (page - 1) * pageSize
+	end := start + pageSize
+
 	s.mu.RLock()
-	matched := make([]AlertRecord, 0)
+	items := make([]AlertRecord, 0, min(pageSize, len(s.records)))
+	total := 0
 	for i := len(s.records) - 1; i >= 0; i-- {
 		rec := s.records[i]
 		if statusFilter != "" && strings.ToLower(rec.Status) != statusFilter {
@@ -322,23 +470,15 @@ func (s *AlertStore) Query(q AlertQuery) AlertQueryResult {
 		if keyword != "" && !matchesAlertKeyword(rec, keyword) {
 			continue
 		}
-		matched = append(matched, cloneAlertRecord(rec))
+		if total >= start && total < end {
+			items = append(items, cloneAlertRecord(rec))
+		}
+		total++
 	}
 	s.mu.RUnlock()
 
-	total := len(matched)
-	start := (page - 1) * pageSize
-	if start >= total {
-		return AlertQueryResult{
-			Items:    []AlertRecord{},
-			Total:    total,
-			Page:     page,
-			PageSize: pageSize,
-		}
-	}
-	end := min(start+pageSize, total)
 	return AlertQueryResult{
-		Items:    matched[start:end],
+		Items:    items,
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
@@ -403,6 +543,8 @@ func (s *AlertStore) Clear() error {
 			return err
 		}
 	}
+	s.diskLines = 0
+	s.diskBytes = 0
 	return nil
 }
 

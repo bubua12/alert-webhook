@@ -6,15 +6,14 @@
 
 ## P1 — 磁盘文件大小上限与自动清理
 
-### 1. [ ] `data/alerts.jsonl` 自动压缩与容量控制
+### 1. [x] `data/alerts.jsonl` 自动压缩与容量控制
 
 - **涉及文件与符号**：
-  - `store/alert_store.go`：`defaultAlertStoreCapacity = 1000`、`AlertStore`、`AlertStore.Add`、`appendJSONL`、`loadFromFile`、`Clear`
+  - `store/alert_store.go`：`defaultAlertStoreCapacity = 1000`、`defaultCompactMaxBytes = 5 * 1024 * 1024`、`AlertStore`、`AlertStore.Add`、`AlertStore.AddBatch`、`compactFileLocked`、`loadFromFile`、`Clear`
   - `main.go`：`main`（`store.NewAlertStore` 初始化）
-- **当前行为**：
-  - `AlertStore` 在内存中以环形缓冲上限保存最近 `1000` 条告警记录；
-  - 磁盘文件 `<data_dir>/alerts.jsonl` 在 `appendJSONL` 中通过 `os.O_CREATE|os.O_WRONLY|os.O_APPEND` 纯追加写入，**没有自动截断或压缩机制**（仅控制台触发 `Clear()` 时会清空）；
-  - 长期运行或发生告警风暴时，`alerts.jsonl` 会持续增长，且下次重启执行 `loadFromFile()` 时需要顺序扫描整个历史文件。
+- **当前行为（已实现）**：
+  - `AlertStore` 在内存中以环形缓冲上限保存最近 `1000` 条告警记录，并提供 `AddBatch` 批量写入；
+  - 磁盘文件 `<data_dir>/alerts.jsonl` 在启动 `loadFromFile()` 与运行期写入时跟踪行数与字节数，当行数超过 `2 * capacity` 或文件大小超过 `5 MB` 时自动触发原子重写压缩（临时文件 + `Sync()` + `os.Rename`），仅保留最新 `capacity` 条记录。
 - **拟实现方案**：
   1. 在 `AlertStore` 中跟踪累计追加行数 / 文件字节数；
   2. 当磁盘行数超过 `2 * capacity`（或超过固定大小阈值，如 `5 MB`）时，在锁保护下执行**原子重写压缩**：仅保留内存中最新的 `capacity` 条记录，先写入同目录临时文件并 `Sync()`，再通过 `os.Rename` 原子替换 `alerts.jsonl`；
@@ -26,12 +25,12 @@
 
 ---
 
-### 2. [ ] `logs/server.log`（`./start.sh`）与 Docker 容器日志轮转限制
+### 2. [x] `logs/server.log`（`./start.sh`）与 Docker 容器日志轮转限制
 
 - **涉及文件与符号**：
-  - `scripts/start.sh`：`nohup "$BIN_PATH" "$@" >> "$LOG_FILE" 2>&1 &`（写入 `$LOG_DIR/server.log`）
-  - `main.go`：`setupLogging`（将日志同时写入 `os.Stdout`、`lumberjack.Logger` 管理的 `alter-server.log` 与内存 `LogBuffer`）
-  - `docker-compose.yml`：`services.alert-webhook`
+  - `scripts/start.sh`：`ALERT_WEBHOOK_DAEMON=1 nohup "$BIN_PATH" "$@" >> "$LOG_FILE" 2>&1 &`（写入 `$LOG_DIR/server.log`，启动前超 10MB 轮转至 `server.log.old`）
+  - `main.go`：`setupLogging`（`lumberjack.Logger` `MaxSize: 10` MB × 5 份；后台守护模式下仅写入文件日志与内存 `LogBuffer`，避免重复写入 `os.Stdout`）
+  - `docker-compose.yml`：`services.alert-webhook.logging`（`json-file` 限制 `max-size: "10m"`、`max-file: "3"`）
 - **当前行为**：
   - `logs/alter-server.log` 已通过 `lumberjack.Logger`（`MaxSize: 1` MB、`MaxBackups: 5`、`MaxAge: 7` 天、`Compress: true`）受控轮转；
   - 但直接以 `./start.sh` 后台启动时，`nohup ... >> logs/server.log 2>&1` 会把同步输出的 `os.Stdout` 完整日志额外再写一份到 `logs/server.log`，且 `server.log` **没有大小上限与轮转清理机制**；

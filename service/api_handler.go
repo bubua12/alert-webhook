@@ -19,7 +19,7 @@ import (
 	"github.com/prometheus/alertmanager/template"
 )
 
-const appVersion = "1.2.0"
+const appVersion = "1.2.1"
 
 // APIHandler implements the REST control-plane and health endpoints.
 type APIHandler struct {
@@ -191,7 +191,13 @@ func (h *APIHandler) HandleListAlerts(c *gin.Context) {
 // HandleClearAlerts serves DELETE /api/alerts.
 func (h *APIHandler) HandleClearAlerts(c *gin.Context) {
 	if h.alertStore != nil {
-		_ = h.alertStore.Clear()
+		if err := h.alertStore.Clear(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"ok":    false,
+				"error": "清空告警记录失败: " + err.Error(),
+			})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

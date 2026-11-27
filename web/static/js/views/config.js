@@ -164,6 +164,7 @@ export function mountConfig(root, ctx) {
   let saveError = '';
   let saveIssues = [];
   let restartRequired = false;
+  let saving = false;
 
   const revealSecrets = {
     clickhouse_password: false,
@@ -247,7 +248,10 @@ export function mountConfig(root, ctx) {
           <div class="banner-content">
             <div>
               <div class="banner-title">检测到环境变量覆盖 (${envOverrides.length})</div>
-              <div class="banner-desc">以下环境变量正在覆盖配置文件对应字段：<span class="mono">${envOverrides.map((e) => escapeHtml(e)).join(', ')}</span></div>
+              <div class="banner-desc">
+                以下环境变量正在覆盖配置文件对应字段：<span class="mono">${envOverrides.map((e) => escapeHtml(e)).join(', ')}</span>。
+                在控制台修改并保存会写入 <code class="mono">config.yaml</code>，但只要环境变量仍存在，对应字段仍会被环境变量覆盖；如需改由控制台管理，请清空 <code class="mono">.env</code> 中对应项并重启服务。
+              </div>
             </div>
           </div>
         </div>
@@ -258,11 +262,12 @@ export function mountConfig(root, ctx) {
       const issuesHtml = saveIssues.length
         ? `<ul style="margin:6px 0 0 18px;padding:0;">${saveIssues.map((it) => `<li><code class="mono">${escapeHtml(it.field)}</code>: ${escapeHtml(it.message)}</li>`).join('')}</ul>`
         : '';
+      const errPrefix = saveIssues.length > 0 ? '配置校验未通过' : '保存配置失败';
       blocks.push(`
         <div class="banner banner-danger">
           <div class="banner-content">
             <div>
-              <div class="banner-title">配置校验未通过：${escapeHtml(saveError || '请检查输入字段')}</div>
+              <div class="banner-title">${errPrefix}：${escapeHtml(saveError || '请检查输入字段')}</div>
               <div class="banner-desc">${issuesHtml}</div>
             </div>
           </div>
@@ -1615,6 +1620,8 @@ export function mountConfig(root, ctx) {
   }
 
   async function handleSaveConfig() {
+    if (saving) return;
+    saving = true;
     saveError = '';
     saveIssues = [];
     const btns = [root.querySelector('#cfg-save-top'), root.querySelector('#cfg-save-bar-btn')].filter(Boolean);
@@ -1625,14 +1632,30 @@ export function mountConfig(root, ctx) {
 
     try {
       const res = await api.saveConfig(draftConfig);
+      if (destroyed) return;
       applyServerResponse(res);
       ctx.toast('配置已保存并热生效', 'success');
       api.getOverview().then((ov) => ctx.onOverviewUpdated?.(ov)).catch(() => {});
     } catch (err) {
+      if (destroyed) return;
       saveError = err.message;
       saveIssues = err.issues || [];
       render();
       ctx.toast(`保存失败: ${err.message}`, 'error');
+    } finally {
+      saving = false;
+      if (!destroyed) {
+        const topBtn = root.querySelector('#cfg-save-top');
+        const barBtn = root.querySelector('#cfg-save-bar-btn');
+        if (topBtn && topBtn.textContent === '保存中...') {
+          topBtn.textContent = '保存并热生效';
+          topBtn.disabled = !isDirty();
+        }
+        if (barBtn && barBtn.textContent === '保存中...') {
+          barBtn.textContent = '保存并热生效';
+          barBtn.disabled = false;
+        }
+      }
     }
   }
 

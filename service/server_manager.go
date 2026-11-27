@@ -46,6 +46,7 @@ type ServerManager struct {
 	alertStore *store.AlertStore
 	logBuffer  *store.LogBuffer
 	svcMgr     *ServiceManager
+	dispatcher *WebhookDispatcher
 	startedAt  time.Time
 }
 
@@ -56,6 +57,7 @@ func NewServerManager(cfgMgr *config.ConfigManager, alertStore *store.AlertStore
 		alertStore: alertStore,
 		logBuffer:  logBuffer,
 		svcMgr:     svcMgr,
+		dispatcher: NewWebhookDispatcher(cfgMgr, alertStore),
 		startedAt:  time.Now(),
 	}
 }
@@ -110,8 +112,13 @@ func (sm *ServerManager) BuildRouter() *gin.Engine {
 
 	apiHandler := NewAPIHandler(sm.cfgMgr, sm.alertStore, sm.logBuffer, sm.svcMgr, sm.startedAt)
 
+	dispatcher := sm.dispatcher
+	if dispatcher == nil {
+		dispatcher = NewWebhookDispatcher(sm.cfgMgr, sm.alertStore)
+	}
+
 	// Public operational, auth handshake, & webhook endpoints (never gated by AuthMiddleware)
-	router.POST("/webhook-alert", GinAlertHandler(sm.cfgMgr, sm.alertStore))
+	router.POST("/webhook-alert", dispatcher.Handle)
 	router.GET("/healthz", apiHandler.HandleHealthz)
 	router.GET("/readyz", apiHandler.HandleReadyz)
 	router.GET("/api/auth/status", apiHandler.HandleAuthStatus)
@@ -124,9 +131,12 @@ func (sm *ServerManager) BuildRouter() *gin.Engine {
 		api.GET("/overview", apiHandler.HandleOverview)
 		api.GET("/alerts", apiHandler.HandleListAlerts)
 		api.DELETE("/alerts", apiHandler.HandleClearAlerts)
+		api.POST("/alerts/clear", apiHandler.HandleClearAlerts)
 		api.GET("/config", apiHandler.HandleGetConfig)
 		api.PUT("/config", apiHandler.HandleUpdateConfig)
+		api.POST("/config", apiHandler.HandleUpdateConfig)
 		api.PUT("/config/yaml", apiHandler.HandleUpdateConfigYAML)
+		api.POST("/config/yaml", apiHandler.HandleUpdateConfigYAML)
 		api.POST("/config/reload", apiHandler.HandleReloadConfig)
 		api.POST("/test/notifier", apiHandler.HandleTestNotifier)
 		api.POST("/test/clickhouse", apiHandler.HandleTestClickHouse)
@@ -245,6 +255,10 @@ func (sm *ServerManager) StartWebhookServer(addr string) error {
 		Addr:              addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	sm.mu.Lock()
@@ -262,13 +276,19 @@ func (sm *ServerManager) StartWebhookServer(addr string) error {
 func (sm *ServerManager) Shutdown() error {
 	sm.mu.Lock()
 	srv := sm.server
+	dispatcher := sm.dispatcher
 	sm.mu.Unlock()
 
-	if srv == nil {
-		return nil
-	}
-	log.Println("正在关闭HTTP服务器...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(ctx)
+
+	var srvErr error
+	if srv != nil {
+		log.Println("正在关闭HTTP服务器...")
+		srvErr = srv.Shutdown(ctx)
+	}
+	if dispatcher != nil {
+		dispatcher.Shutdown(ctx)
+	}
+	return srvErr
 }

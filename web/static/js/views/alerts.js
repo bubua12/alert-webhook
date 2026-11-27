@@ -13,6 +13,7 @@ import {
 export function mountAlerts(root, ctx) {
   let destroyed = false;
   let reqSeq = 0;
+  let activeController = null;
 
   const query = {
     page: 1,
@@ -209,16 +210,23 @@ export function mountAlerts(root, ctx) {
 
   async function load({ silent = false } = {}) {
     const thisReq = ++reqSeq;
+    activeController?.abort();
+    const controller = new AbortController();
+    activeController = controller;
     try {
-      const res = await api.getAlerts(query);
+      const res = await api.getAlerts(query, { signal: controller.signal });
       if (destroyed || thisReq !== reqSeq) return;
       currentItems = Array.isArray(res?.items) ? res.items : [];
       total = Number(res?.total) || 0;
       renderTable();
     } catch (err) {
-      if (destroyed || thisReq !== reqSeq) return;
+      if (err?.aborted || destroyed || thisReq !== reqSeq) return;
       if (!silent && tbody) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state text-danger">加载失败: ${escapeHtml(err.message)}</div></td></tr>`;
+      }
+    } finally {
+      if (activeController === controller) {
+        activeController = null;
       }
     }
   }
@@ -294,6 +302,11 @@ export function mountAlerts(root, ctx) {
       danger: true,
     });
     if (!ok) return;
+    const clearBtn = root.querySelector('#alerts-clear');
+    if (clearBtn) {
+      clearBtn.disabled = true;
+      clearBtn.textContent = '清空中...';
+    }
     try {
       await api.clearAlerts();
       ctx.toast('已清空全部告警记录', 'success');
@@ -302,6 +315,11 @@ export function mountAlerts(root, ctx) {
       api.getOverview().then((ov) => ctx.onOverviewUpdated?.(ov)).catch(() => {});
     } catch (err) {
       ctx.toast(`清空失败: ${err.message}`, 'error');
+    } finally {
+      if (!destroyed && clearBtn) {
+        clearBtn.disabled = false;
+        clearBtn.textContent = '清空记录';
+      }
     }
   });
 
@@ -311,6 +329,7 @@ export function mountAlerts(root, ctx) {
     refresh: load,
     destroy: () => {
       destroyed = true;
+      activeController?.abort();
     },
   };
 }

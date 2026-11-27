@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +171,118 @@ func TestValidateWebhookResponse(t *testing.T) {
 				t.Fatalf("ValidateWebhookResponse() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateWebhookResponseRateLimit(t *testing.T) {
+	cases := []struct {
+		name        string
+		client      string
+		status      int
+		body        string
+		rateLimited bool
+	}{
+		{"wechat 45009", "wechat", http.StatusOK, `{"errcode":45009,"errmsg":"api freq out of limit"}`, true},
+		{"wechat 40001", "wechat", http.StatusOK, `{"errcode":40001,"errmsg":"invalid credential"}`, false},
+		{"dingtalk 130101", "dingtalk", http.StatusOK, `{"errcode":130101,"errmsg":"too many messages"}`, true},
+		{"dingtalk 310000", "dingtalk", http.StatusOK, `{"errcode":310000,"errmsg":"sign error"}`, false},
+		{"feishu 11232", "feishu", http.StatusOK, `{"code":11232,"msg":"rate limited"}`, true},
+		{"feishu 99991400", "feishu", http.StatusOK, `{"code":99991400,"msg":"frequency limit"}`, true},
+		{"feishu statuscode 11232", "feishu", http.StatusOK, `{"StatusCode":11232,"StatusMessage":"rate limited"}`, true},
+		{"feishu 19021", "feishu", http.StatusOK, `{"code":19021,"msg":"forbidden"}`, false},
+		{"http 429", "wechat", http.StatusTooManyRequests, `too many requests`, true},
+		{"http 500", "wechat", http.StatusInternalServerError, `server error`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateWebhookResponse(tc.client, tc.status, []byte(tc.body))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if IsRateLimitError(err) != tc.rateLimited {
+				t.Fatalf("IsRateLimitError(%v) = %v, want %v", err, IsRateLimitError(err), tc.rateLimited)
+			}
+		})
+	}
+
+	if IsRateLimitError(nil) {
+		t.Fatal("IsRateLimitError(nil) must be false")
+	}
+	if IsRateLimitError(errors.New("plain error")) {
+		t.Fatal("IsRateLimitError(plain) must be false")
+	}
+}
+
+func makeStormTestData(count int) template.Data {
+	alerts := make([]template.Alert, 0, count)
+	now := time.Now()
+	for i := 0; i < count; i++ {
+		alerts = append(alerts, template.Alert{
+			Status: "firing",
+			Labels: template.KV{
+				"alertname": "KubePodNotReady",
+				"severity":  "warning",
+				"instance":  "pod-" + strconv.Itoa(i),
+			},
+			Annotations: template.KV{
+				"summary":     "Pod has been in a non-ready state for more than 15 minutes.",
+				"description": "Pod syncplant-backend/pod-" + strconv.Itoa(i) + " " + strings.Repeat("d", 140),
+			},
+			StartsAt: now,
+		})
+	}
+	return template.Data{
+		Status: "firing",
+		Alerts: alerts,
+	}
+}
+
+func TestRenderWeChatMessagesStormCollapse(t *testing.T) {
+	data := makeStormTestData(500)
+	msgs, omitted := RenderWeChatMessages(data, 5)
+	if len(msgs) == 0 || len(msgs) > 5 {
+		t.Fatalf("expected 1..5 batches, got %d", len(msgs))
+	}
+	if omitted <= 0 {
+		t.Fatalf("expected omitted > 0 for 500 alerts, got %d", omitted)
+	}
+	for i, msg := range msgs {
+		if len(msg) > wechatMaxMessageBytes {
+			t.Fatalf("batch %d exceeded %d bytes: %d", i, wechatMaxMessageBytes, len(msg))
+		}
+	}
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last, "告警风暴折叠") || !strings.Contains(last, "500") || !strings.Contains(last, strconv.Itoa(omitted)) {
+		t.Fatalf("expected collapse notice in last batch, got:\n%s", last)
+	}
+}
+
+func TestFormatDingtalkAndFeishuCapped(t *testing.T) {
+	small := makeStormTestData(2)
+	dtSmall, dtOmitted0 := FormatDingtalkCapped(small, 16000)
+	if dtOmitted0 != 0 || dtSmall != AlertFormatDingtalk(small) {
+		t.Fatalf("expected uncapped DingTalk output to match AlertFormatDingtalk, omitted=%d", dtOmitted0)
+	}
+	fsSmall, fsOmitted0 := FormatFeishuCapped(small, 20000)
+	if fsOmitted0 != 0 || fsSmall != AlertFormatFeishu(small) {
+		t.Fatalf("expected uncapped Feishu output to match AlertFormatFeishu, omitted=%d", fsOmitted0)
+	}
+
+	storm := makeStormTestData(200)
+	dtMsg, dtOmitted := FormatDingtalkCapped(storm, 4000)
+	if dtOmitted <= 0 || len(dtMsg) > 4000 {
+		t.Fatalf("expected truncated DingTalk message <= 4000B with omitted > 0, len=%d omitted=%d", len(dtMsg), dtOmitted)
+	}
+	if !strings.Contains(dtMsg, "告警风暴折叠") || !strings.Contains(dtMsg, "200") || !strings.Contains(dtMsg, strconv.Itoa(dtOmitted)) {
+		t.Fatalf("missing DingTalk collapse notice:\n%s", dtMsg)
+	}
+
+	fsMsg, fsOmitted := FormatFeishuCapped(storm, 4000)
+	if fsOmitted <= 0 || len(fsMsg) > 4000 {
+		t.Fatalf("expected truncated Feishu message <= 4000B with omitted > 0, len=%d omitted=%d", len(fsMsg), fsOmitted)
+	}
+	if !strings.Contains(fsMsg, "告警风暴折叠") || !strings.Contains(fsMsg, "200") || !strings.Contains(fsMsg, strconv.Itoa(fsOmitted)) {
+		t.Fatalf("missing Feishu collapse notice:\n%s", fsMsg)
 	}
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"alert-webhook/config"
 	"alert-webhook/store"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -392,7 +393,7 @@ filter:
 	if err := json.Unmarshal(ovRec.Body.Bytes(), &ovBody); err != nil {
 		t.Fatal(err)
 	}
-	if ovBody["version"] != "1.2.0" || ovBody["setup_complete"] != true || ovBody["auth_required"] != true {
+	if ovBody["version"] != "1.2.1" || ovBody["setup_complete"] != true || ovBody["auth_required"] != true {
 		t.Fatalf("unexpected overview payload: %+v", ovBody)
 	}
 
@@ -1164,5 +1165,423 @@ func TestAuthEndpointsWithoutTokenConfigured(t *testing.T) {
 	router.ServeHTTP(lgRec, lgReq)
 	if lgRec.Code != http.StatusOK || !strings.Contains(lgRec.Body.String(), `"authenticated":true`) {
 		t.Fatalf("unexpected unconfigured /api/auth/login: %d %s", lgRec.Code, lgRec.Body.String())
+	}
+}
+
+func TestWeChatRateLimitEarlyStopCooldownAndTestBypass(t *testing.T) {
+	ResetRateLimitCooldown()
+	SetRateLimitCooldownDuration(10 * time.Second)
+	t.Cleanup(func() {
+		ResetRateLimitCooldown()
+		SetRateLimitCooldownDuration(defaultRateLimitCooldownWindow)
+	})
+
+	var calls atomic.Int32
+	wechatSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 2 {
+			_, _ = w.Write([]byte(`{"errcode":45009,"errmsg":"api freq out of limit"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer wechatSrv.Close()
+
+	yamlCfg := `server:
+  port: "127.0.0.1:18082"
+client:
+  - wechat
+notifiers:
+  wechat:
+    webhooks:
+      - name: "企微测试群"
+        url: "` + wechatSrv.URL + `"
+`
+	_, alertStore, _, _, srvMgr := setupTestEnv(t, yamlCfg)
+	t.Cleanup(func() {
+		_ = srvMgr.Shutdown()
+	})
+	router := srvMgr.BuildRouter()
+
+	longDesc := strings.Repeat("x", 1500)
+	alerts := make([]map[string]interface{}, 0, 5)
+	for i := 0; i < 5; i++ {
+		alerts = append(alerts, map[string]interface{}{
+			"status": "firing",
+			"labels": map[string]string{
+				"alertname": fmt.Sprintf("StormBatch-%d", i),
+				"severity":  "warning",
+				"instance":  "node-1",
+			},
+			"annotations": map[string]string{
+				"summary":     "summary",
+				"description": longDesc,
+			},
+		})
+	}
+	payloadBytes, _ := json.Marshal(map[string]interface{}{
+		"status": "firing",
+		"alerts": alerts,
+	})
+
+	// 1. First webhook hits 45009 on batch 2 -> stops remaining batches, enters cooldown, returns 202 (no retry storm).
+	req1 := httptest.NewRequest(http.MethodPost, "/webhook-alert", bytes.NewReader(payloadBytes))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted on pure rate-limit failure, got %d (%s)", rec1.Code, rec1.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected early stop after batch 2 (2 HTTP calls), got %d", calls.Load())
+	}
+	stored := alertStore.Query(store.AlertQuery{Page: 1, PageSize: 10})
+	if stored.Total != 5 || len(stored.Items[0].Deliveries) != 1 || !stored.Items[0].Deliveries[0].RateLimited {
+		t.Fatalf("expected 5 records marked RateLimited=true, got %+v", stored)
+	}
+
+	// 2. Second webhook during cooldown skips HTTP call completely and still returns 202.
+	req2 := httptest.NewRequest(http.MethodPost, "/webhook-alert", bytes.NewReader(payloadBytes))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted during cooldown, got %d (%s)", rec2.Code, rec2.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected 0 extra HTTP calls during cooldown, total calls=%d", calls.Load())
+	}
+
+	// 3. Manual /api/test/notifier must bypass alert rate-limit cooldown.
+	testReq := httptest.NewRequest(http.MethodPost, "/api/test/notifier", strings.NewReader(`{"client":"wechat"}`))
+	testReq.Header.Set("Content-Type", "application/json")
+	testRec := httptest.NewRecorder()
+	router.ServeHTTP(testRec, testReq)
+	if testRec.Code != http.StatusOK || !strings.Contains(testRec.Body.String(), `"ok":true`) {
+		t.Fatalf("expected /api/test/notifier to bypass cooldown and succeed, got %d %s", testRec.Code, testRec.Body.String())
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("expected /api/test/notifier to reach mock server (calls=3), got %d", calls.Load())
+	}
+}
+
+func TestWebhookStormDoesNotBlockControlPlane(t *testing.T) {
+	ResetRateLimitCooldown()
+	t.Cleanup(ResetRateLimitCooldown)
+
+	var wechatCalls atomic.Int32
+	slowWechat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wechatCalls.Add(1)
+		time.Sleep(120 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer slowWechat.Close()
+
+	yamlCfg := `server:
+  port: "127.0.0.1:18082"
+client:
+  - wechat
+notifiers:
+  wechat:
+    webhooks:
+      - name: "压测群"
+        url: "` + slowWechat.URL + `"
+`
+	cfgMgr, _, _, svcMgr, srvMgr := setupTestEnv(t, yamlCfg)
+	cfgMgr.OnReload(func(c *config.AppConfig) {
+		svcMgr.ReloadAsync(c)
+	})
+	router := srvMgr.BuildRouter()
+	t.Cleanup(func() {
+		_ = srvMgr.Shutdown()
+	})
+
+	alerts := make([]map[string]interface{}, 0, 200)
+	for i := 0; i < 200; i++ {
+		alerts = append(alerts, map[string]interface{}{
+			"status": "firing",
+			"labels": map[string]string{
+				"alertname": "KubePodNotReady",
+				"severity":  "warning",
+				"instance":  fmt.Sprintf("pod-%d", i),
+			},
+			"annotations": map[string]string{
+				"summary":     "Pod not ready",
+				"description": fmt.Sprintf("Pod syncplant/pod-%d non-ready", i),
+			},
+		})
+	}
+	stormBody, _ := json.Marshal(map[string]interface{}{
+		"status": "firing",
+		"alerts": alerts,
+	})
+
+	var acceptedCount atomic.Int32
+	var okCount atomic.Int32
+	var stormWG sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		stormWG.Add(1)
+		go func() {
+			defer stormWG.Done()
+			req := httptest.NewRequest(http.MethodPost, "/webhook-alert", bytes.NewReader(stormBody))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			switch rec.Code {
+			case http.StatusOK:
+				okCount.Add(1)
+			case http.StatusAccepted:
+				acceptedCount.Add(1)
+			default:
+				t.Errorf("unexpected webhook storm status %d: %s", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+
+	// Concurrently hit control plane endpoints while the storm is active.
+	time.Sleep(30 * time.Millisecond)
+
+	var ctrlWG sync.WaitGroup
+	ctrlWG.Add(4)
+
+	go func() {
+		defer ctrlWG.Done()
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET /healthz failed during storm: %d", rec.Code)
+		}
+	}()
+
+	go func() {
+		defer ctrlWG.Done()
+		req := httptest.NewRequest(http.MethodGet, "/api/alerts?page=1&page_size=20", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET /api/alerts failed during storm: %d", rec.Code)
+		}
+	}()
+
+	go func() {
+		defer ctrlWG.Done()
+		cfg := cfgMgr.Get()
+		cfg.Clients = []string{}
+		body, _ := json.Marshal(cfg)
+		req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("PUT /api/config failed during storm: %d %s", rec.Code, rec.Body.String())
+		}
+	}()
+
+	go func() {
+		defer ctrlWG.Done()
+		req := httptest.NewRequest(http.MethodDelete, "/api/alerts", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("DELETE /api/alerts failed during storm: %d %s", rec.Code, rec.Body.String())
+		}
+	}()
+
+	ctrlWG.Wait()
+	stormWG.Wait()
+
+	if acceptedCount.Load() == 0 {
+		t.Fatalf("expected overflowed storm requests to enter async queue (202), got ok=%d accepted=%d", okCount.Load(), acceptedCount.Load())
+	}
+	if wechatCalls.Load() == 0 {
+		t.Fatal("expected at least some WeChat deliveries to have executed")
+	}
+}
+
+func TestServiceManagerSelectiveReloadAndReloadAsyncShutdown(t *testing.T) {
+	kafkaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"pageCount":1,"consumerGroups":[]}`))
+	}))
+	defer kafkaSrv.Close()
+
+	yamlCfg := `server:
+  port: "127.0.0.1:18082"
+client:
+  - wechat
+notifiers:
+  wechat:
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=initial"
+kafka_monitor:
+  enabled: true
+  kafka_ui_url: "` + kafkaSrv.URL + `"
+  cluster_name: "cluster-a"
+  check_interval: 60
+  consumer_lag_threshold: 100
+`
+	cfgMgr, _, _, svcMgr, _ := setupTestEnv(t, yamlCfg)
+	svcMgr.InitializeAll(cfgMgr.Get())
+
+	svcMgr.mu.Lock()
+	firstKafka := svcMgr.kafkaMonitorService
+	svcMgr.mu.Unlock()
+	if firstKafka == nil {
+		t.Fatal("expected kafkaMonitorService started")
+	}
+
+	// Changing only notifier/filter must NOT restart KafkaMonitorService.
+	cfg1 := cfgMgr.Get()
+	cfg1.Clients = []string{}
+	cfg1.Filter.AlertName.Exclude = []string{"Noise*"}
+	svcMgr.Reload(cfg1)
+
+	svcMgr.mu.Lock()
+	afterNotifierChange := svcMgr.kafkaMonitorService
+	svcMgr.mu.Unlock()
+	if afterNotifierChange != firstKafka {
+		t.Fatal("expected KafkaMonitorService instance preserved when only notifier/filter changed")
+	}
+
+	// Changing Kafka cluster name MUST restart KafkaMonitorService.
+	cfg2 := cfgMgr.Get()
+	cfg2.KafkaMonitor.ClusterName = "cluster-b"
+	svcMgr.Reload(cfg2)
+
+	svcMgr.mu.Lock()
+	afterKafkaChange := svcMgr.kafkaMonitorService
+	svcMgr.mu.Unlock()
+	if afterKafkaChange == nil || afterKafkaChange == firstKafka {
+		t.Fatal("expected KafkaMonitorService restarted when kafka_monitor config changed")
+	}
+
+	// Rapid concurrent ReloadAsync followed by Shutdown must complete without races or leaks.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			c := cfgMgr.Get()
+			c.KafkaMonitor.ClusterName = fmt.Sprintf("cluster-%d", idx)
+			svcMgr.ReloadAsync(c)
+		}(i)
+	}
+	wg.Wait()
+	svcMgr.Shutdown()
+}
+
+func TestAlertmanagerWebhookBodyLimit413(t *testing.T) {
+	_, _, _, _, srvMgr := setupTestEnv(t, "")
+	t.Cleanup(func() {
+		_ = srvMgr.Shutdown()
+	})
+	router := srvMgr.BuildRouter()
+
+	var payload bytes.Buffer
+	payload.WriteString(`{"status":"firing","padding":"`)
+	payload.Write(bytes.Repeat([]byte("a"), int(maxWebhookBodyBytes)+1024))
+	payload.WriteString(`"}`)
+
+	// Test streaming/chunked body (ContentLength = -1) rejected via http.MaxBytesReader.
+	req := httptest.NewRequest(http.MethodPost, "/webhook-alert", bytes.NewReader(payload.Bytes()))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 Request Entity Too Large for >10MB body, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestControlPlanePOSTAliasesAndAuth(t *testing.T) {
+	yamlCfg := `server:
+  port: "127.0.0.1:18082"
+  auth_token: "post-alias-token"
+client: []
+notifiers: {}
+`
+	_, alertStore, _, _, srvMgr := setupTestEnv(t, yamlCfg)
+	t.Cleanup(func() {
+		_ = srvMgr.Shutdown()
+	})
+	router := srvMgr.BuildRouter()
+
+	alertStore.Add(store.AlertRecord{
+		Source:        "alertmanager",
+		Status:        "firing",
+		DeliveryState: "sent",
+		AlertName:     "AliasTestAlert",
+		Severity:      "warning",
+	})
+
+	// 1. Unauthenticated POST alias requests must be rejected with 401.
+	for _, tc := range []struct {
+		path string
+		body string
+	}{
+		{"/api/alerts/clear", ""},
+		{"/api/config", `{}`},
+		{"/api/config/yaml", `{"yaml":""}`},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("POST %s without token expected 401, got %d", tc.path, rec.Code)
+		}
+	}
+
+	doAuthedPOST := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("X-API-Key", "post-alias-token")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 2. POST /api/alerts/clear clears AlertStore just like DELETE /api/alerts.
+	clearRec := doAuthedPOST("/api/alerts/clear", "")
+	if clearRec.Code != http.StatusOK || alertStore.Query(store.AlertQuery{}).Total != 0 {
+		t.Fatalf("POST /api/alerts/clear failed: %d %s", clearRec.Code, clearRec.Body.String())
+	}
+
+	// 3. POST /api/config saves config just like PUT /api/config.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getReq.Header.Set("X-API-Key", "post-alias-token")
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/config failed: %d", getRec.Code)
+	}
+	var cfgResp struct {
+		Config config.AppConfig `json:"config"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &cfgResp); err != nil {
+		t.Fatal(err)
+	}
+	cfgResp.Config.Clients = []string{"wechat"}
+	cfgResp.Config.Notifiers["wechat"] = config.NotifierConfig{
+		Webhooks: []config.WebhookTarget{
+			{Name: "测试群", URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=post-test-123"},
+		},
+	}
+	cfgBytes, _ := json.Marshal(cfgResp.Config)
+	postCfgRec := doAuthedPOST("/api/config", string(cfgBytes))
+	if postCfgRec.Code != http.StatusOK || !strings.Contains(postCfgRec.Body.String(), "key=post-test-123") {
+		t.Fatalf("POST /api/config failed: %d %s", postCfgRec.Code, postCfgRec.Body.String())
+	}
+
+	// 4. POST /api/config/yaml saves raw YAML just like PUT /api/config/yaml.
+	yamlBody, _ := json.Marshal(map[string]string{
+		"yaml": "server:\n  port: \"127.0.0.1:18082\"\n  auth_token: \"post-alias-token\"\nclient:\n  - dingtalk\nnotifiers:\n  dingtalk:\n    webhook_url: \"https://oapi.dingtalk.com/robot/send?access_token=post-dt-123\"\n",
+	})
+	postYAMLRec := doAuthedPOST("/api/config/yaml", string(yamlBody))
+	if postYAMLRec.Code != http.StatusOK || !strings.Contains(postYAMLRec.Body.String(), `"dingtalk"`) {
+		t.Fatalf("POST /api/config/yaml failed: %d %s", postYAMLRec.Code, postYAMLRec.Body.String())
 	}
 }

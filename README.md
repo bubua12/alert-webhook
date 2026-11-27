@@ -1,7 +1,7 @@
 <h1 align="center">Alertmanager Webhook Notifier</h1>
 <p align="center">面向运维与研发的告警路由转发中心：接收 Prometheus Alertmanager Webhook，巡检 ClickHouse 大流量与 Kafka 消费积压，并发推送至企业微信 / 钉钉 / 飞书，内置零依赖 Web 运维控制台</p>
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-v1.2.0-brightgreen.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Version-v1.2.1-brightgreen.svg" alt="Version">
   <img src="https://img.shields.io/badge/Go-1.24-blue.svg" alt="Go Version">
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS%20%7C%20Docker-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
@@ -945,6 +945,12 @@ make run
 
 ### 更新日志
 
+- **v1.2.1**
+  - **告警风暴全链路加固**：`/webhook-alert` 新增 `WebhookDispatcher` 有界并发（同步上限 8）、64 容量异步削峰队列（满队列背压保护 + 实时重读最新配置/过滤规则）、`10MB` 请求体上限（`413`）及 HTTP Server 读写/空闲超时防护。
+  - **平台限流早停与冷却熔断**：识别 HTTP `429` 与企微 `45009`、钉钉 `130101`、飞书 `11232`/`99991400` 限流响应，触发单目标 `30s` 冷却并在纯限流降级时返回 `202 Accepted`，打破 Alertmanager 重试雪崩；大批量告警自动折叠（企微最多 5 批、钉钉 16KB、飞书 20KB）并附带折叠提示。
+  - **`AlertStore` 批量写入与自动压缩**：新增 `AddBatch` 批量落盘、超过 `2 * capacity` 或 `5MB` 自动原子重写压缩（启动与运行期均触发），以及仅克隆当前页的分页查询优化。
+  - **异步选择性热重载与日志轮转**：`ServiceManager` 改为合并异步重载（`ReloadAsync`），修改通知渠道/过滤规则时不再重启 ClickHouse/Kafka 巡检；`lumberjack` 调优至 `10MB` 轮转，`start.sh` 启用 `ALERT_WEBHOOK_DAEMON=1` 防重复写 `server.log`，Compose 增加 `json-file` 日志配额。
+  - **Web 控制台防卡死与全量 `POST` 兼容**：后端新增 `POST /api/alerts/clear`、`POST /api/config`、`POST /api/config/yaml` 兼容路由（保留原 `DELETE`/`PUT`），前端全量改用 `GET`/`POST` 避免内网防火墙/代理拦截；新增 `AbortController` 请求超时、10 秒轮询防重入与保存/清空防连击锁。
 - **v1.2.0**
   - 新增零外部 CDN 依赖的内置 Web 控制台（监控总览、告警审计抽屉、可视化配置中心与热更新、调试沙箱、实时运行日志，支持浅色/深色主题切换）。
   - 新增全渠道（企业微信 / 钉钉 / 飞书）多 Webhook 并发推送支持：支持备注名、单目标独立启停、`webhooks` 列表与逗号分隔环境变量配置，并逐目标记录投递回执与延迟统计，100% 向后兼容旧版 `webhook_url`。

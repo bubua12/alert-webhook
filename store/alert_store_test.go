@@ -372,3 +372,136 @@ func TestAlertStoreMultiWebhookStatsPersistenceAndTargetSearch(t *testing.T) {
 		t.Fatalf("unexpected dingtalk stats: %+v", dt)
 	}
 }
+
+func countNonEmptyFileLines(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s failed: %v", path, err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func TestAlertStoreAddBatchAndAutoCompaction(t *testing.T) {
+	dir := t.TempDir()
+	st := NewAlertStore(dir, 100)
+
+	batch := make([]AlertRecord, 0, 2500)
+	for i := 1; i <= 2500; i++ {
+		batch = append(batch, AlertRecord{
+			Source:        "alertmanager",
+			Status:        "firing",
+			DeliveryState: "sent",
+			AlertName:     fmt.Sprintf("Batch-%04d", i),
+			Severity:      "warning",
+		})
+	}
+	st.AddBatch(batch)
+
+	recent := st.Recent(200)
+	if len(recent) != 100 {
+		t.Fatalf("expected 100 records in ring buffer, got %d", len(recent))
+	}
+	if recent[0].AlertName != "Batch-2500" || recent[99].AlertName != "Batch-2401" {
+		t.Fatalf("unexpected batch order: first=%s last=%s", recent[0].AlertName, recent[99].AlertName)
+	}
+
+	jsonlPath := filepath.Join(dir, "alerts.jsonl")
+	if lines := countNonEmptyFileLines(t, jsonlPath); lines != 100 {
+		t.Fatalf("expected compacted alerts.jsonl with 100 lines, got %d", lines)
+	}
+
+	// Incremental additions exceeding 2*capacity must also auto-compact back down.
+	for i := 2501; i <= 2650; i++ {
+		st.Add(AlertRecord{
+			Source:        "alertmanager",
+			Status:        "firing",
+			DeliveryState: "sent",
+			AlertName:     fmt.Sprintf("Batch-%04d", i),
+			Severity:      "warning",
+		})
+	}
+	if lines := countNonEmptyFileLines(t, jsonlPath); lines > 200 {
+		t.Fatalf("expected alerts.jsonl lines bounded <= 200, got %d", lines)
+	}
+
+	reloaded := NewAlertStore(dir, 100)
+	reloadedRecent := reloaded.Recent(200)
+	if len(reloadedRecent) != 100 || reloadedRecent[0].AlertName != "Batch-2650" || reloadedRecent[99].AlertName != "Batch-2551" {
+		t.Fatalf("unexpected reloaded records: len=%d first=%s last=%s",
+			len(reloadedRecent), reloadedRecent[0].AlertName, reloadedRecent[len(reloadedRecent)-1].AlertName)
+	}
+}
+
+func TestAlertStoreStartupCompactsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "alerts.jsonl")
+
+	var sb strings.Builder
+	for i := 1; i <= 350; i++ {
+		sb.WriteString(fmt.Sprintf(`{"id":"id-%d","timestamp":"2026-11-27T12:00:00+08:00","source":"alertmanager","status":"firing","delivery_state":"sent","alert_name":"Line-%03d","severity":"warning"}`+"\n", i, i))
+	}
+	if err := os.WriteFile(jsonlPath, []byte(sb.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := NewAlertStore(dir, 100)
+	recent := st.Recent(200)
+	if len(recent) != 100 || recent[0].AlertName != "Line-350" || recent[99].AlertName != "Line-251" {
+		t.Fatalf("unexpected startup loaded records: len=%d", len(recent))
+	}
+	if lines := countNonEmptyFileLines(t, jsonlPath); lines != 100 {
+		t.Fatalf("expected startup compaction to reduce alerts.jsonl to 100 lines, got %d", lines)
+	}
+}
+
+func TestAlertStorePaginationIsolation(t *testing.T) {
+	st := NewAlertStore("", 100)
+	recs := make([]AlertRecord, 0, 45)
+	for i := 1; i <= 45; i++ {
+		sev := "warning"
+		if i%3 == 0 {
+			sev = "critical"
+		}
+		recs = append(recs, AlertRecord{
+			Source:        "alertmanager",
+			Status:        "firing",
+			DeliveryState: "sent",
+			AlertName:     fmt.Sprintf("Page-%02d", i),
+			Severity:      sev,
+			Labels:        map[string]string{"idx": fmt.Sprintf("%d", i)},
+		})
+	}
+	st.AddBatch(recs)
+
+	p1 := st.Query(AlertQuery{Page: 1, PageSize: 20})
+	p2 := st.Query(AlertQuery{Page: 2, PageSize: 20})
+	p3 := st.Query(AlertQuery{Page: 3, PageSize: 20})
+	p4 := st.Query(AlertQuery{Page: 4, PageSize: 20})
+
+	if p1.Total != 45 || len(p1.Items) != 20 || p1.Items[0].AlertName != "Page-45" || p1.Items[19].AlertName != "Page-26" {
+		t.Fatalf("unexpected page 1: %+v", p1)
+	}
+	if p2.Total != 45 || len(p2.Items) != 20 || p2.Items[0].AlertName != "Page-25" || p2.Items[19].AlertName != "Page-06" {
+		t.Fatalf("unexpected page 2: %+v", p2)
+	}
+	if p3.Total != 45 || len(p3.Items) != 5 || p3.Items[0].AlertName != "Page-05" || p3.Items[4].AlertName != "Page-01" {
+		t.Fatalf("unexpected page 3: %+v", p3)
+	}
+	if p4.Total != 45 || len(p4.Items) != 0 {
+		t.Fatalf("unexpected page 4: %+v", p4)
+	}
+
+	// Mutating returned page item must not mutate stored copy.
+	p1.Items[0].Labels["idx"] = "tampered"
+	p1Again := st.Query(AlertQuery{Page: 1, PageSize: 1})
+	if p1Again.Items[0].Labels["idx"] != "45" {
+		t.Fatalf("Query did not isolate cloned labels, got %q", p1Again.Items[0].Labels["idx"])
+	}
+}

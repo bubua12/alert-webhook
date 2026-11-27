@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,18 @@ type ServiceManager struct {
 	kafkaMonitorService *KafkaMonitorService
 	trafficInitErr      string
 	kafkaInitErr        string
+
+	hasLastConfig  bool
+	lastClickHouse config.ClickHouseConfig
+	lastTraffic    config.TrafficAlertConfig
+	lastKafka      config.KafkaMonitorConfig
+
+	reloadMu      sync.Mutex
+	pendingReload *config.AppConfig
+	hasPending    bool
+	reloadRunning bool
+	reloadClosed  bool
+	reloadWg      sync.WaitGroup
 }
 
 // NewServiceManager creates a new ServiceManager.
@@ -61,7 +74,25 @@ func (sm *ServiceManager) InitializeAll(cfg *config.AppConfig) {
 	sm.Reload(cfg)
 }
 
-// Reload gracefully stops running background services and restarts them with newCfg.
+func kafkaMonitorConfigEqual(a, b config.KafkaMonitorConfig) bool {
+	return a.Enabled == b.Enabled &&
+		a.KafkaUIURL == b.KafkaUIURL &&
+		a.ClusterName == b.ClusterName &&
+		a.CheckInterval == b.CheckInterval &&
+		a.ConsumerLagThreshold == b.ConsumerLagThreshold &&
+		slices.Equal(a.MonitoredGroups, b.MonitoredGroups) &&
+		slices.Equal(a.IgnoredGroups, b.IgnoredGroups)
+}
+
+func cloneKafkaMonitorConfig(src config.KafkaMonitorConfig) config.KafkaMonitorConfig {
+	cloned := src
+	cloned.MonitoredGroups = append([]string{}, src.MonitoredGroups...)
+	cloned.IgnoredGroups = append([]string{}, src.IgnoredGroups...)
+	return cloned
+}
+
+// Reload selectively reconciles running background services against newCfg.
+// Unchanged ClickHouse/Traffic or Kafka configurations keep their existing services running untouched.
 func (sm *ServiceManager) Reload(newCfg *config.AppConfig) {
 	if newCfg == nil && sm.cfgMgr != nil {
 		newCfg = sm.cfgMgr.Get()
@@ -70,16 +101,95 @@ func (sm *ServiceManager) Reload(newCfg *config.AppConfig) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	sm.stopLocked()
-	sm.trafficInitErr = ""
-	sm.kafkaInitErr = ""
-
 	if newCfg == nil {
+		sm.stopLocked()
+		sm.trafficInitErr = ""
+		sm.kafkaInitErr = ""
+		sm.hasLastConfig = false
 		return
 	}
 
-	sm.initTrafficLocked(newCfg)
-	sm.initKafkaLocked(newCfg)
+	trafficChanged := !sm.hasLastConfig ||
+		sm.lastClickHouse != newCfg.ClickHouse ||
+		sm.lastTraffic != newCfg.TrafficAlert
+
+	if !newCfg.TrafficAlert.Enabled {
+		if sm.trafficAlertService != nil || sm.clickhouseService != nil {
+			sm.stopTrafficLocked()
+			sm.trafficInitErr = ""
+		} else if !sm.hasLastConfig {
+			sm.trafficInitErr = ""
+			sm.initTrafficLocked(newCfg)
+		} else {
+			sm.trafficInitErr = ""
+		}
+	} else if trafficChanged || sm.trafficAlertService == nil || sm.clickhouseService == nil {
+		sm.stopTrafficLocked()
+		sm.trafficInitErr = ""
+		sm.initTrafficLocked(newCfg)
+	}
+
+	kafkaChanged := !sm.hasLastConfig || !kafkaMonitorConfigEqual(sm.lastKafka, newCfg.KafkaMonitor)
+	if !newCfg.KafkaMonitor.Enabled {
+		if sm.kafkaMonitorService != nil {
+			sm.stopKafkaLocked()
+			sm.kafkaInitErr = ""
+		} else if !sm.hasLastConfig {
+			sm.kafkaInitErr = ""
+			sm.initKafkaLocked(newCfg)
+		} else {
+			sm.kafkaInitErr = ""
+		}
+	} else if kafkaChanged || sm.kafkaMonitorService == nil {
+		sm.stopKafkaLocked()
+		sm.kafkaInitErr = ""
+		sm.initKafkaLocked(newCfg)
+	}
+
+	sm.hasLastConfig = true
+	sm.lastClickHouse = newCfg.ClickHouse
+	sm.lastTraffic = newCfg.TrafficAlert
+	sm.lastKafka = cloneKafkaMonitorConfig(newCfg.KafkaMonitor)
+}
+
+// ReloadAsync schedules a non-blocking background reload, coalescing rapid config updates.
+func (sm *ServiceManager) ReloadAsync(newCfg *config.AppConfig) {
+	var snapshot *config.AppConfig
+	if newCfg != nil {
+		snapshot = newCfg.Clone()
+	}
+
+	sm.reloadMu.Lock()
+	if sm.reloadClosed {
+		sm.reloadMu.Unlock()
+		return
+	}
+	sm.pendingReload = snapshot
+	sm.hasPending = true
+	if !sm.reloadRunning {
+		sm.reloadRunning = true
+		sm.reloadWg.Add(1)
+		go sm.runReloadLoop()
+	}
+	sm.reloadMu.Unlock()
+}
+
+func (sm *ServiceManager) runReloadLoop() {
+	defer sm.reloadWg.Done()
+	for {
+		sm.reloadMu.Lock()
+		if sm.reloadClosed || !sm.hasPending {
+			sm.reloadRunning = false
+			sm.reloadMu.Unlock()
+			return
+		}
+		cfg := sm.pendingReload
+		sm.pendingReload = nil
+		sm.hasPending = false
+		sm.reloadMu.Unlock()
+
+		sm.Reload(cfg)
+	}
 }
 
 // InitializeTrafficAlert initializes only the traffic alert service using current config.
@@ -165,14 +275,10 @@ func (sm *ServiceManager) initKafkaLocked(cfg *config.AppConfig) {
 	console.Success("[Success]", "Kafka监控服务启动成功")
 }
 
-func (sm *ServiceManager) stopLocked() {
+func (sm *ServiceManager) stopTrafficLocked() {
 	if sm.trafficAlertService != nil {
 		sm.trafficAlertService.Stop()
 		sm.trafficAlertService = nil
-	}
-	if sm.kafkaMonitorService != nil {
-		sm.kafkaMonitorService.Stop()
-		sm.kafkaMonitorService = nil
 	}
 	if sm.clickhouseService != nil {
 		if err := sm.clickhouseService.Close(); err != nil {
@@ -182,9 +288,28 @@ func (sm *ServiceManager) stopLocked() {
 	}
 }
 
+func (sm *ServiceManager) stopKafkaLocked() {
+	if sm.kafkaMonitorService != nil {
+		sm.kafkaMonitorService.Stop()
+		sm.kafkaMonitorService = nil
+	}
+}
+
+func (sm *ServiceManager) stopLocked() {
+	sm.stopTrafficLocked()
+	sm.stopKafkaLocked()
+}
+
 // Shutdown 优雅关闭所有服务
 func (sm *ServiceManager) Shutdown() {
 	log.Println("正在关闭服务管理器...")
+	sm.reloadMu.Lock()
+	sm.reloadClosed = true
+	sm.pendingReload = nil
+	sm.hasPending = false
+	sm.reloadMu.Unlock()
+	sm.reloadWg.Wait()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.stopLocked()

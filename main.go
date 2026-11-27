@@ -60,16 +60,22 @@ func setupLogging(logDir string, logBuffer *store.LogBuffer) {
 		dir = "./logs"
 	}
 
-	writers := []io.Writer{os.Stdout}
+	isDaemon := strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_DAEMON")) == "1"
+	writers := make([]io.Writer, 0, 3)
+
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		writers = append(writers, os.Stdout)
 		log.Printf("[Warn] 无法创建日志目录 %s: %v，将仅输出到标准输出与内存缓冲", dir, err)
 	} else {
 		lumberjackLogger := &lumberjack.Logger{
 			Filename:   filepath.Join(dir, "alter-server.log"),
-			MaxSize:    1,
+			MaxSize:    10,
 			MaxBackups: 5,
 			MaxAge:     7,
 			Compress:   true,
+		}
+		if !isDaemon {
+			writers = append(writers, os.Stdout)
 		}
 		writers = append(writers, lumberjackLogger)
 	}

@@ -1,4 +1,4 @@
-# Alert Webhook Notifier v1.2.0 示例配置文件
+# Alert Webhook Notifier v1.2.1 示例配置文件
 # 说明：
 # 1. 支持零配置启动：即使缺少或留空部分配置，服务也可正常启动，随后可通过 Web 控制台 (http://localhost:18082) 在线配置并热生效。
 # 2. 完全向后兼容 v1.0/v1.1 配置文件结构；所有选项也可通过 ALERT_WEBHOOK_* 环境变量覆盖。

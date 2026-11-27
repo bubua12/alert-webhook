@@ -55,7 +55,14 @@ export function setUnauthorizedHandler(fn) {
 }
 
 export async function request(url, options = {}) {
-  const { method = 'GET', body, headers = {}, skipAuthRetry = false } = options;
+  const {
+    method = 'GET',
+    body,
+    headers = {},
+    skipAuthRetry = false,
+    timeoutMs = 15000,
+    signal: externalSignal,
+  } = options;
   const reqHeaders = { ...headers };
   const token = getStoredToken();
 
@@ -71,26 +78,73 @@ export async function request(url, options = {}) {
     payloadBody = JSON.stringify(body);
   }
 
-  const res = await fetch(url, {
-    method,
-    headers: reqHeaders,
-    body: payloadBody,
-    credentials: 'same-origin',
-  });
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId = null;
+  const onExternalAbort = () => controller.abort();
 
-  if (res.status === 401 && url.startsWith('/api/') && !url.startsWith('/api/auth/') && !skipAuthRetry) {
-    const hadToken = Boolean(token);
-    clearStoredToken();
-    if (unauthorizedHandler) {
-      unauthorizedHandler(hadToken ? 'API Key 已失效或已变更，请重新登录。' : '当前控制台受 API Key 保护，请登录后继续。');
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      const abortErr = new Error('请求已取消');
+      abortErr.aborted = true;
+      throw abortErr;
     }
-    const authErr = new Error('需要有效 API Key 才能访问控制台');
-    authErr.status = 401;
-    authErr.authRequired = true;
-    throw authErr;
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
 
-  const text = await res.text();
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  let res;
+  let text;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: reqHeaders,
+      body: payloadBody,
+      credentials: 'same-origin',
+      signal: controller.signal,
+    });
+
+    if (res.status === 401 && url.startsWith('/api/') && !url.startsWith('/api/auth/') && !skipAuthRetry) {
+      const hadToken = Boolean(token);
+      clearStoredToken();
+      if (unauthorizedHandler) {
+        unauthorizedHandler(hadToken ? 'API Key 已失效或已变更，请重新登录。' : '当前控制台受 API Key 保护，请登录后继续。');
+      }
+      const authErr = new Error('需要有效 API Key 才能访问控制台');
+      authErr.status = 401;
+      authErr.authRequired = true;
+      throw authErr;
+    }
+
+    text = await res.text();
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      if (timedOut) {
+        const timeoutErr = new Error('请求超时，服务端响应缓慢或连接已断开');
+        timeoutErr.timeout = true;
+        throw timeoutErr;
+      }
+      const abortErr = new Error('请求已取消');
+      abortErr.aborted = true;
+      throw abortErr;
+    }
+    if (err instanceof TypeError) {
+      const netErr = new Error('无法连接服务端，请检查服务进程与网络状态');
+      netErr.network = true;
+      throw netErr;
+    }
+    throw err;
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+
   let data = null;
   if (text) {
     try {
@@ -124,22 +178,22 @@ function buildQuery(params = {}) {
 }
 
 export const api = {
-  healthz: () => request('/healthz'),
-  readyz: () => request('/readyz'),
+  healthz: () => request('/healthz', { timeoutMs: 5000 }),
+  readyz: () => request('/readyz', { timeoutMs: 5000 }),
   authStatus: () => request('/api/auth/status', { skipAuthRetry: true }),
   login: (apiKey) => request('/api/auth/login', { method: 'POST', body: { api_key: apiKey }, skipAuthRetry: true }),
   getOverview: () => request('/api/overview'),
-  getAlerts: (params = {}) => request(`/api/alerts${buildQuery(params)}`),
-  clearAlerts: () => request('/api/alerts', { method: 'DELETE' }),
+  getAlerts: (params = {}, options = {}) => request(`/api/alerts${buildQuery(params)}`, options),
+  clearAlerts: () => request('/api/alerts/clear', { method: 'POST' }),
   getConfig: () => request('/api/config'),
-  saveConfig: (config) => request('/api/config', { method: 'PUT', body: config }),
-  saveConfigYaml: (yaml) => request('/api/config/yaml', { method: 'PUT', body: { yaml } }),
+  saveConfig: (config) => request('/api/config', { method: 'POST', body: config }),
+  saveConfigYaml: (yaml) => request('/api/config/yaml', { method: 'POST', body: { yaml } }),
   reloadConfig: () => request('/api/config/reload', { method: 'POST' }),
-  testNotifier: (payload) => request('/api/test/notifier', { method: 'POST', body: payload }),
-  testClickHouse: (cfg) => request('/api/test/clickhouse', { method: 'POST', body: cfg || {} }),
-  testKafka: (cfg) => request('/api/test/kafka', { method: 'POST', body: cfg || {} }),
+  testNotifier: (payload) => request('/api/test/notifier', { method: 'POST', body: payload, timeoutMs: 30000 }),
+  testClickHouse: (cfg) => request('/api/test/clickhouse', { method: 'POST', body: cfg || {}, timeoutMs: 30000 }),
+  testKafka: (cfg) => request('/api/test/kafka', { method: 'POST', body: cfg || {}, timeoutMs: 30000 }),
   testFilter: (payload) => request('/api/filter/test', { method: 'POST', body: payload }),
-  simulate: (payload) => request('/api/simulate', { method: 'POST', body: payload }),
+  simulate: (payload) => request('/api/simulate', { method: 'POST', body: payload, timeoutMs: 30000 }),
   triggerTrafficCheck: () => request('/api/services/traffic/check', { method: 'POST' }),
   triggerKafkaCheck: () => request('/api/services/kafka/check', { method: 'POST' }),
   getLogs: (params = {}) => request(`/api/logs${buildQuery(params)}`),

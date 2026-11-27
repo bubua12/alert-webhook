@@ -36,10 +36,10 @@ func NewAppLauncher(cfgMgr *config.ConfigManager, alertStore *store.AlertStore, 
 func (app *AppLauncher) Run() {
 	cfg := app.cfgMgr.Get()
 
-	// 1. 注册配置热更新回调
+	// 1. 注册配置热更新回调（异步合并重载，避免阻塞控制面配置保存）
 	app.cfgMgr.OnReload(func(newCfg *config.AppConfig) {
-		log.Println("检测到配置更新，正在热重载后台监控服务...")
-		app.serviceManager.Reload(newCfg)
+		log.Println("检测到配置更新，正在异步热重载后台监控服务...")
+		app.serviceManager.ReloadAsync(newCfg)
 	})
 
 	// 2. 初始化后台监控服务

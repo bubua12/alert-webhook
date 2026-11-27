@@ -57,6 +57,7 @@ const state = {
   shouldPauseRefresh: null,
   autoRefresh: true,
   refreshTimer: null,
+  refreshInFlight: false,
   authRequired: false,
   authenticated: false,
   confirmResolve: null,
@@ -672,17 +673,22 @@ function mountRoute(routeKey) {
 function startAutoRefresh() {
   if (state.refreshTimer) clearInterval(state.refreshTimer);
   state.refreshTimer = setInterval(async () => {
-    if (!state.autoRefresh || document.hidden) return;
-    await pollTopbarHealth();
-    if (typeof state.shouldPauseRefresh === 'function' && state.shouldPauseRefresh()) {
-      return;
-    }
-    if (typeof state.currentRefresh === 'function') {
-      try {
-        await state.currentRefresh({ silent: true });
-      } catch {
-        // silent background refresh
+    if (!state.autoRefresh || document.hidden || state.refreshInFlight) return;
+    state.refreshInFlight = true;
+    try {
+      await pollTopbarHealth();
+      if (typeof state.shouldPauseRefresh === 'function' && state.shouldPauseRefresh()) {
+        return;
       }
+      if (typeof state.currentRefresh === 'function') {
+        try {
+          await state.currentRefresh({ silent: true });
+        } catch {
+          // silent background refresh
+        }
+      }
+    } finally {
+      state.refreshInFlight = false;
     }
   }, 10000);
 }

@@ -98,8 +98,15 @@ LOG_DIR="${ALERT_WEBHOOK_LOG_DIR:-$APP_HOME/logs}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/server.log"
 
+if [ -f "$LOG_FILE" ]; then
+  LOG_SIZE="$(wc -c < "$LOG_FILE" | tr -d '[:space:]' || echo 0)"
+  if [ "${LOG_SIZE:-0}" -gt 10485760 ]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.old" || :
+  fi
+fi
+
 echo "正在启动 $APP_NAME ..."
-nohup "$BIN_PATH" "$@" >> "$LOG_FILE" 2>&1 &
+ALERT_WEBHOOK_DAEMON=1 nohup "$BIN_PATH" "$@" >> "$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 

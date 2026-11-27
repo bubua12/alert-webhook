@@ -2,7 +2,9 @@ package utils
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 )
 
 // PrintJSON 将任意结构体以 JSON 格式美观地打印到控制台。
@@ -57,10 +59,60 @@ type NotifierAPIResponse struct {
 	StatusMessage string `json:"StatusMessage"`
 }
 
+// WebhookAPIError represents an HTTP or platform business-code error returned by a webhook target.
+type WebhookAPIError struct {
+	Client      string
+	HTTPStatus  int
+	Code        int
+	Message     string
+	RateLimited bool
+	errorText   string
+}
+
+func (e *WebhookAPIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.errorText != "" {
+		return e.errorText
+	}
+	if e.HTTPStatus != 0 && (e.HTTPStatus < 200 || e.HTTPStatus >= 300) {
+		return fmt.Sprintf("[%s] 返回错误状态码: %d, 响应: %s", e.Client, e.HTTPStatus, e.Message)
+	}
+	return fmt.Sprintf("[%s] 接口返回错误 code=%d, msg=%s", e.Client, e.Code, e.Message)
+}
+
+// Sanitize redacts sensitive substrings (such as webhook tokens) while keeping the structured error type intact.
+func (e *WebhookAPIError) Sanitize(fn func(string) string) {
+	if e == nil || fn == nil {
+		return
+	}
+	e.Message = fn(e.Message)
+	if e.errorText != "" {
+		e.errorText = fn(e.errorText)
+	}
+}
+
+// IsRateLimitError reports whether err represents a platform rate-limit error (HTTP 429 or platform throttle code).
+func IsRateLimitError(err error) bool {
+	var apiErr *WebhookAPIError
+	if errors.As(err, &apiErr) {
+		return apiErr.RateLimited
+	}
+	return false
+}
+
 // ValidateWebhookResponse verifies both HTTP 2xx status and platform-specific JSON error codes.
 func ValidateWebhookResponse(client string, statusCode int, body []byte) error {
 	if statusCode < 200 || statusCode >= 300 {
-		return fmt.Errorf("[%s] 返回错误状态码: %d, 响应: %s", client, statusCode, string(body))
+		msg := string(body)
+		return &WebhookAPIError{
+			Client:      client,
+			HTTPStatus:  statusCode,
+			Message:     msg,
+			RateLimited: statusCode == http.StatusTooManyRequests,
+			errorText:   fmt.Sprintf("[%s] 返回错误状态码: %d, 响应: %s", client, statusCode, msg),
+		}
 	}
 
 	if len(body) == 0 {
@@ -76,17 +128,50 @@ func ValidateWebhookResponse(client string, statusCode int, body []byte) error {
 	switch client {
 	case "wechat", "dingtalk":
 		if parsed.ErrCode != nil && *parsed.ErrCode != 0 {
-			return fmt.Errorf("[%s] 接口返回错误 errcode=%d, errmsg=%s", client, *parsed.ErrCode, parsed.ErrMsg)
+			code := *parsed.ErrCode
+			rateLimited := (client == "wechat" && code == 45009) || (client == "dingtalk" && code == 130101)
+			return &WebhookAPIError{
+				Client:      client,
+				HTTPStatus:  statusCode,
+				Code:        code,
+				Message:     parsed.ErrMsg,
+				RateLimited: rateLimited,
+				errorText:   fmt.Sprintf("[%s] 接口返回错误 errcode=%d, errmsg=%s", client, code, parsed.ErrMsg),
+			}
 		}
 	case "feishu":
 		if parsed.Code != nil && *parsed.Code != 0 {
-			return fmt.Errorf("[%s] 接口返回错误 code=%d, msg=%s", client, *parsed.Code, parsed.Msg)
+			code := *parsed.Code
+			return &WebhookAPIError{
+				Client:      client,
+				HTTPStatus:  statusCode,
+				Code:        code,
+				Message:     parsed.Msg,
+				RateLimited: code == 11232 || code == 99991400,
+				errorText:   fmt.Sprintf("[%s] 接口返回错误 code=%d, msg=%s", client, code, parsed.Msg),
+			}
 		}
 		if parsed.StatusCode != nil && *parsed.StatusCode != 0 {
-			return fmt.Errorf("[%s] 接口返回错误 StatusCode=%d, StatusMessage=%s", client, *parsed.StatusCode, parsed.StatusMessage)
+			code := *parsed.StatusCode
+			return &WebhookAPIError{
+				Client:      client,
+				HTTPStatus:  statusCode,
+				Code:        code,
+				Message:     parsed.StatusMessage,
+				RateLimited: code == 11232 || code == 99991400,
+				errorText:   fmt.Sprintf("[%s] 接口返回错误 StatusCode=%d, StatusMessage=%s", client, code, parsed.StatusMessage),
+			}
 		}
 		if parsed.ErrCode != nil && *parsed.ErrCode != 0 {
-			return fmt.Errorf("[%s] 接口返回错误 errcode=%d, errmsg=%s", client, *parsed.ErrCode, parsed.ErrMsg)
+			code := *parsed.ErrCode
+			return &WebhookAPIError{
+				Client:      client,
+				HTTPStatus:  statusCode,
+				Code:        code,
+				Message:     parsed.ErrMsg,
+				RateLimited: code == 11232 || code == 99991400,
+				errorText:   fmt.Sprintf("[%s] 接口返回错误 errcode=%d, errmsg=%s", client, code, parsed.ErrMsg),
+			}
 		}
 	}
 
