@@ -1269,13 +1269,23 @@ func TestWebhookStormDoesNotBlockControlPlane(t *testing.T) {
 	ResetRateLimitCooldown()
 	t.Cleanup(ResetRateLimitCooldown)
 
+	releaseWechat := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseWechat) })
+	}
+
 	var wechatCalls atomic.Int32
 	slowWechat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wechatCalls.Add(1)
-		time.Sleep(120 * time.Millisecond)
+		select {
+		case <-releaseWechat:
+		case <-r.Context().Done():
+		}
 		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
 	}))
 	defer slowWechat.Close()
+	defer release()
 
 	yamlCfg := `server:
   port: "127.0.0.1:18082"
@@ -1293,6 +1303,7 @@ notifiers:
 	})
 	router := srvMgr.BuildRouter()
 	t.Cleanup(func() {
+		release()
 		_ = srvMgr.Shutdown()
 	})
 
@@ -1338,9 +1349,22 @@ notifiers:
 		}()
 	}
 
-	// Concurrently hit control plane endpoints while the storm is active.
-	time.Sleep(30 * time.Millisecond)
+	// Deterministically wait until sync concurrency slots are saturated and overflow enters async queue (202).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if acceptedCount.Load() > 0 && wechatCalls.Load() >= defaultMaxSyncWebhookConcurrency {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if acceptedCount.Load() == 0 {
+		release()
+		stormWG.Wait()
+		t.Fatalf("timed out waiting for overflowed storm requests to enter async queue (202): ok=%d accepted=%d wechatCalls=%d",
+			okCount.Load(), acceptedCount.Load(), wechatCalls.Load())
+	}
 
+	// Hit control plane endpoints while all sync + async delivery slots remain blocked.
 	var ctrlWG sync.WaitGroup
 	ctrlWG.Add(4)
 
@@ -1389,13 +1413,15 @@ notifiers:
 	}()
 
 	ctrlWG.Wait()
+	release()
 	stormWG.Wait()
+	_ = srvMgr.Shutdown()
 
 	if acceptedCount.Load() == 0 {
 		t.Fatalf("expected overflowed storm requests to enter async queue (202), got ok=%d accepted=%d", okCount.Load(), acceptedCount.Load())
 	}
-	if wechatCalls.Load() == 0 {
-		t.Fatal("expected at least some WeChat deliveries to have executed")
+	if wechatCalls.Load() < defaultMaxSyncWebhookConcurrency {
+		t.Fatalf("expected at least %d WeChat calls during saturation, got %d", defaultMaxSyncWebhookConcurrency, wechatCalls.Load())
 	}
 }
 
