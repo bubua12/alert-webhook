@@ -26,6 +26,7 @@ const DefaultConfigYAML = `server:
 # 消息接收客户端，留空时可通过 Web 控制台或环境变量配置
 client: []
 
+# 通知渠道配置：除单地址 webhook_url 外，也支持通过 webhooks 列表配置多个推送目标
 notifiers:
   wechat:
     webhook_url: ""
@@ -311,9 +312,20 @@ func applyEnvOverrides(cfg *AppConfig) []string {
 		cfg.Server.Port = v
 		overrides = append(overrides, "ALERT_WEBHOOK_PORT")
 	}
-	if v := strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_AUTH_TOKEN")); v != "" {
-		cfg.Server.AuthToken = v
-		overrides = append(overrides, "ALERT_WEBHOOK_AUTH_TOKEN")
+
+	// API_KEY takes highest precedence, followed by ALERT_WEBHOOK_API_KEY and ALERT_WEBHOOK_AUTH_TOKEN.
+	authCandidates := []string{"API_KEY", "ALERT_WEBHOOK_API_KEY", "ALERT_WEBHOOK_AUTH_TOKEN"}
+	var resolvedAuthToken string
+	for _, envName := range authCandidates {
+		if v := strings.TrimSpace(os.Getenv(envName)); v != "" {
+			overrides = append(overrides, envName)
+			if resolvedAuthToken == "" {
+				resolvedAuthToken = v
+			}
+		}
+	}
+	if resolvedAuthToken != "" {
+		cfg.Server.AuthToken = resolvedAuthToken
 	}
 	if v := strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_DATA_DIR")); v != "" {
 		cfg.Server.DataDir = v
@@ -327,17 +339,37 @@ func applyEnvOverrides(cfg *AppConfig) []string {
 	// Only auto-populate cfg.Clients from env URLs if client list was not explicitly set.
 	clientsWereEmpty := len(cfg.Clients) == 0
 	notifierEnvMap := []struct {
-		envVar string
-		client string
+		singularVar string
+		pluralVar   string
+		client      string
 	}{
-		{"ALERT_WEBHOOK_WECHAT_URL", "wechat"},
-		{"ALERT_WEBHOOK_DINGTALK_URL", "dingtalk"},
-		{"ALERT_WEBHOOK_FEISHU_URL", "feishu"},
+		{"ALERT_WEBHOOK_WECHAT_URL", "ALERT_WEBHOOK_WECHAT_URLS", "wechat"},
+		{"ALERT_WEBHOOK_DINGTALK_URL", "ALERT_WEBHOOK_DINGTALK_URLS", "dingtalk"},
+		{"ALERT_WEBHOOK_FEISHU_URL", "ALERT_WEBHOOK_FEISHU_URLS", "feishu"},
 	}
 	for _, item := range notifierEnvMap {
-		if v := strings.TrimSpace(os.Getenv(item.envVar)); v != "" {
-			cfg.Notifiers[item.client] = NotifierConfig{WebhookURL: v}
-			overrides = append(overrides, item.envVar)
+		mergedURLs := make([]string, 0)
+		seenURLs := make(map[string]bool)
+		for _, envVar := range []string{item.singularVar, item.pluralVar} {
+			if raw := strings.TrimSpace(os.Getenv(envVar)); raw != "" {
+				overrides = append(overrides, envVar)
+				for _, u := range parseEnvWebhookURLs(raw) {
+					if !seenURLs[u] {
+						seenURLs[u] = true
+						mergedURLs = append(mergedURLs, u)
+					}
+				}
+			}
+		}
+		if len(mergedURLs) > 0 {
+			targets := make([]WebhookTarget, 0, len(mergedURLs))
+			for _, u := range mergedURLs {
+				targets = append(targets, WebhookTarget{URL: u})
+			}
+			cfg.Notifiers[item.client] = NotifierConfig{
+				WebhookURL: mergedURLs[0],
+				Webhooks:   targets,
+			}
 			if clientsWereEmpty && !slices.Contains(cfg.Clients, item.client) {
 				cfg.Clients = append(cfg.Clients, item.client)
 			}
@@ -394,6 +426,24 @@ func applyEnvOverrides(cfg *AppConfig) []string {
 	}
 
 	return overrides
+}
+
+// parseEnvWebhookURLs splits a comma- or newline-delimited env var value into trimmed, deduplicated URLs.
+func parseEnvWebhookURLs(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	seen := make(map[string]bool, len(parts))
+	urls := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		urls = append(urls, trimmed)
+	}
+	return urls
 }
 
 // atomicWriteFile writes data via a temporary file + rename, falling back to os.WriteFile on EXDEV/EBUSY.

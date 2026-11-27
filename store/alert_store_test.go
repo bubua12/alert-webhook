@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -271,4 +272,103 @@ func TestStoreAndLogBufferConcurrency(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func TestAlertStoreMultiWebhookStatsPersistenceAndTargetSearch(t *testing.T) {
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "alerts.jsonl")
+
+	// Seed a legacy alert line without "target" field to verify backward compatibility
+	legacyLine := `{"id":"legacy-1","timestamp":"2026-08-10T13:00:00+08:00","source":"alertmanager","status":"firing","delivery_state":"sent","alert_name":"LegacyAlert","severity":"warning","deliveries":[{"client":"wechat","success":true,"status_code":200,"duration_ms":15}]}` + "\n"
+	if err := os.WriteFile(jsonlPath, []byte(legacyLine), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	st1 := NewAlertStore(dir, 50)
+	loc := utils.GetShanghaiLocation()
+	now := time.Date(2026, 8, 10, 14, 30, 0, 0, loc)
+
+	// Add multi-webhook alert record with Target names on the same Client
+	st1.Add(AlertRecord{
+		Timestamp:     now.Format(time.RFC3339),
+		Source:        "alertmanager",
+		Status:        "firing",
+		DeliveryState: "partial",
+		AlertName:     "MultiTargetAlert",
+		Severity:      "critical",
+		Deliveries: []DeliveryResult{
+			{Client: "wechat", Target: "运维群", Success: true, StatusCode: 200, DurationMs: 25},
+			{Client: "wechat", Target: "值班群", Success: false, StatusCode: 500, DurationMs: 50, Error: "upstream err"},
+			{Client: "feishu", Target: "#1", Success: true, StatusCode: 200, DurationMs: 30},
+		},
+	})
+
+	// Verify JSONL persistence and reload of Target field + legacy record compatibility
+	rawJSONL, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rawJSONL), `"target":"运维群"`) {
+		t.Fatalf("expected target persisted in JSONL, got:\n%s", string(rawJSONL))
+	}
+
+	st2 := NewAlertStore(dir, 50)
+	recent := st2.Recent(10)
+	if len(recent) != 2 {
+		t.Fatalf("expected 2 records after reload, got %d", len(recent))
+	}
+	if recent[0].Deliveries[0].Target != "运维群" || recent[0].Deliveries[1].Target != "值班群" {
+		t.Fatalf("expected target preserved on reload, got %+v", recent[0].Deliveries)
+	}
+	if recent[1].ID != "legacy-1" || recent[1].Deliveries[0].Target != "" {
+		t.Fatalf("expected legacy record intact without target, got %+v", recent[1])
+	}
+
+	// Keyword search on DeliveryResult.Target
+	res := st2.Query(AlertQuery{Q: "值班群"})
+	if res.Total != 1 || res.Items[0].AlertName != "MultiTargetAlert" {
+		t.Fatalf("expected query on target name '值班群' to match MultiTargetAlert, got %+v", res)
+	}
+
+	// StatsAt with multi-webhook ConfiguredCount / TotalCount and multi-delivery accumulation
+	cfg := config.DefaultAppConfig()
+	cfg.Clients = []string{"wechat", "feishu"}
+	cfg.Notifiers["wechat"] = config.NotifierConfig{
+		Webhooks: []config.WebhookTarget{
+			{Name: "运维群", URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k1"},
+			{Name: "值班群", URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k2"},
+			{Name: "停用群", URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k3", Enabled: boolPtr(false)},
+			{Name: "占位群", URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxx"},
+		},
+	}
+	cfg.Notifiers["feishu"] = config.NotifierConfig{
+		Webhooks: []config.WebhookTarget{
+			{URL: "https://open.feishu.cn/open-apis/bot/v2/hook/real1"},
+		},
+	}
+	cfg.ApplyDefaults()
+
+	stats := st2.StatsAt(cfg, now)
+	wc := stats.ByChannel["wechat"]
+	if !wc.Enabled || !wc.Configured || wc.ConfiguredCount != 2 || wc.TotalCount != 4 {
+		t.Fatalf("unexpected wechat multi-webhook counts: %+v", wc)
+	}
+	// Legacy wechat delivery (15ms, success) + 运维群 (25ms, success) + 值班群 (50ms, fail) => sent=2, failed=1, avg=(15+25+50)/3 = 30.0
+	if wc.Sent != 2 || wc.Failed != 1 || wc.AvgLatencyMs != 30 {
+		t.Fatalf("unexpected wechat delivery accumulation: %+v", wc)
+	}
+
+	fs := stats.ByChannel["feishu"]
+	if !fs.Enabled || !fs.Configured || fs.ConfiguredCount != 1 || fs.TotalCount != 1 || fs.Sent != 1 {
+		t.Fatalf("unexpected feishu stats: %+v", fs)
+	}
+
+	dt := stats.ByChannel["dingtalk"]
+	if dt.Enabled || dt.Configured || dt.ConfiguredCount != 0 || dt.TotalCount != 0 {
+		t.Fatalf("unexpected dingtalk stats: %+v", dt)
+	}
 }

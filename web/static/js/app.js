@@ -12,8 +12,7 @@ import {
   getStoredToken,
   setStoredToken,
   clearStoredToken,
-  onTokenChange,
-  setAuthPromptHandler,
+  setUnauthorizedHandler,
 } from './api.js';
 import { mountDashboard } from './views/dashboard.js';
 import { mountAlerts } from './views/alerts.js';
@@ -59,6 +58,7 @@ const state = {
   autoRefresh: true,
   refreshTimer: null,
   authRequired: false,
+  authenticated: false,
   confirmResolve: null,
 };
 
@@ -72,12 +72,17 @@ function applyTheme(theme) {
   } catch {
     // ignore
   }
-  const sun = document.getElementById('theme-icon-sun');
-  const moon = document.getElementById('theme-icon-moon');
-  if (sun && moon) {
-    sun.classList.toggle('hidden', next !== 'dark');
-    moon.classList.toggle('hidden', next === 'dark');
-  }
+  [
+    ['theme-icon-sun', 'theme-icon-moon'],
+    ['login-theme-icon-sun', 'login-theme-icon-moon'],
+  ].forEach(([sunId, moonId]) => {
+    const sun = document.getElementById(sunId);
+    const moon = document.getElementById(moonId);
+    if (sun && moon) {
+      sun.classList.toggle('hidden', next !== 'dark');
+      moon.classList.toggle('hidden', next === 'dark');
+    }
+  });
 }
 
 function toggleTheme() {
@@ -187,17 +192,19 @@ export function openAlertDetail(record) {
     ? deliveries
         .map((d) => {
           const cm = clientMeta(d.client);
+          const target = String(d.target || '').trim();
           const okBadge = d.success
             ? '<span class="pill pill-success">推送成功</span>'
             : '<span class="pill pill-emergency">推送失败</span>';
           return `
             <div class="delivery-card">
               <div class="delivery-card-top">
-                <div style="display:flex;align-items:center;gap:8px;">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                   <strong>${escapeHtml(cm.name)}</strong>
                   <span class="pill pill-neutral mono">${escapeHtml(d.client)}</span>
+                  ${target ? `<span class="pill pill-info">${escapeHtml(target)}</span>` : ''}
                 </div>
-                <div style="display:flex;align-items:center;gap:6px;">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                   ${d.status_code ? `<span class="pill pill-neutral mono">HTTP ${escapeHtml(d.status_code)}</span>` : ''}
                   ${d.batches ? `<span class="pill pill-info mono">${escapeHtml(d.batches)} 批</span>` : ''}
                   <span class="pill pill-neutral mono">${escapeHtml(d.duration_ms ?? 0)} ms</span>
@@ -310,72 +317,150 @@ function finishConfirm(result) {
   }
 }
 
-/* ---------- Token Unlock Modal ---------- */
+/* ---------- Auth Gate & Login Page ---------- */
 
-let tokenModalResolve = null;
-
-function updateTokenIndicator() {
-  const btn = document.getElementById('btn-token-lock');
-  const label = document.getElementById('token-status-label');
-  const lockedIcon = document.getElementById('token-icon-locked');
-  const unlockedIcon = document.getElementById('token-icon-unlocked');
-  if (!btn || !label) return;
-
-  const hasToken = Boolean(getStoredToken());
-  btn.classList.remove('is-locked', 'is-required');
-  if (hasToken) {
-    btn.classList.add('is-locked');
-    label.textContent = '已设令牌';
-    lockedIcon?.classList.remove('hidden');
-    unlockedIcon?.classList.add('hidden');
-  } else if (state.authRequired) {
-    btn.classList.add('is-required');
-    label.textContent = '待解锁';
-    lockedIcon?.classList.add('hidden');
-    unlockedIcon?.classList.remove('hidden');
-  } else {
-    label.textContent = '未设令牌';
-    lockedIcon?.classList.add('hidden');
-    unlockedIcon?.classList.remove('hidden');
+function updateAuthUI() {
+  const logoutBtn = document.getElementById('btn-logout');
+  if (logoutBtn) {
+    logoutBtn.classList.toggle('hidden', !state.authRequired);
   }
 }
 
-export function openTokenModal(reason = '') {
-  const modal = document.getElementById('token-modal');
-  const desc = document.getElementById('token-modal-desc');
-  const input = document.getElementById('token-input');
-  const errEl = document.getElementById('token-error');
-  if (!modal || !input) return Promise.resolve(false);
-
-  if (desc) {
-    desc.textContent = reason || '如果服务端配置了 server.auth_token 或 ALERT_WEBHOOK_AUTH_TOKEN，请在此填写 API 访问令牌（将安全保存于当前浏览器 localStorage）。';
-  }
-  input.value = getStoredToken();
-  input.type = 'password';
-  if (errEl) {
+function setLoginError(message = '') {
+  const errEl = document.getElementById('login-error');
+  if (!errEl) return;
+  if (message) {
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  } else {
     errEl.textContent = '';
     errEl.classList.add('hidden');
   }
-
-  modal.classList.remove('hidden');
-  modal.setAttribute('aria-hidden', 'false');
-  setTimeout(() => input.focus(), 50);
-
-  return new Promise((resolve) => {
-    tokenModalResolve = resolve;
-  });
 }
 
-function closeTokenModal(unlocked) {
-  const modal = document.getElementById('token-modal');
-  if (modal) {
-    modal.classList.add('hidden');
-    modal.setAttribute('aria-hidden', 'true');
+function destroyCurrentView() {
+  if (typeof state.currentCleanup === 'function') {
+    try {
+      state.currentCleanup();
+    } catch {
+      // ignore
+    }
   }
-  if (tokenModalResolve) {
-    const res = tokenModalResolve;
-    tokenModalResolve = null;
-    res(unlocked);
+  state.currentCleanup = null;
+  state.currentRefresh = null;
+  state.shouldPauseRefresh = null;
+  const root = document.getElementById('view-root');
+  if (root) root.innerHTML = '';
+}
+
+function stopAutoRefresh() {
+  if (state.refreshTimer) {
+    clearInterval(state.refreshTimer);
+    state.refreshTimer = null;
+  }
+}
+
+function showBootScreen(errorHtml = '') {
+  const bootEl = document.getElementById('auth-boot-screen');
+  const loginEl = document.getElementById('login-screen');
+  const appEl = document.getElementById('app-shell');
+
+  if (loginEl) {
+    loginEl.classList.add('hidden');
+    loginEl.setAttribute('aria-hidden', 'true');
+  }
+  if (appEl) {
+    appEl.classList.add('hidden');
+    appEl.setAttribute('aria-hidden', 'true');
+  }
+  if (bootEl) {
+    if (errorHtml) {
+      bootEl.innerHTML = errorHtml;
+    }
+    bootEl.classList.remove('hidden');
+  }
+}
+
+function showLoginScreen(reason = '') {
+  const bootEl = document.getElementById('auth-boot-screen');
+  const loginEl = document.getElementById('login-screen');
+  const appEl = document.getElementById('app-shell');
+  const input = document.getElementById('login-api-key');
+  const alreadyOnLogin = Boolean(loginEl && !loginEl.classList.contains('hidden') && !state.authenticated);
+
+  state.authenticated = false;
+  stopAutoRefresh();
+  destroyCurrentView();
+  closeDrawer();
+  closeQuickTestModal();
+  finishConfirm(false);
+
+  if (bootEl) bootEl.classList.add('hidden');
+  if (appEl) {
+    appEl.classList.add('hidden');
+    appEl.setAttribute('aria-hidden', 'true');
+  }
+  if (loginEl) {
+    loginEl.classList.remove('hidden');
+    loginEl.setAttribute('aria-hidden', 'false');
+  }
+  if (input && !alreadyOnLogin) {
+    input.type = 'password';
+    input.value = '';
+    setTimeout(() => input.focus(), 40);
+  }
+  setLoginError(reason);
+  updateAuthUI();
+}
+
+function enterAppShell() {
+  state.authenticated = true;
+
+  const bootEl = document.getElementById('auth-boot-screen');
+  const loginEl = document.getElementById('login-screen');
+  const appEl = document.getElementById('app-shell');
+
+  if (bootEl) bootEl.classList.add('hidden');
+  if (loginEl) {
+    loginEl.classList.add('hidden');
+    loginEl.setAttribute('aria-hidden', 'true');
+  }
+  if (appEl) {
+    appEl.classList.remove('hidden');
+    appEl.setAttribute('aria-hidden', 'false');
+  }
+  setLoginError('');
+  updateAuthUI();
+  pollTopbarHealth();
+  mountRoute(parseRouteFromHash());
+  startAutoRefresh();
+}
+
+async function checkAuthAndBoot() {
+  showBootScreen('<div class="auth-boot-inner"><span class="spinner"></span><span>正在验证访问权限...</span></div>');
+  try {
+    const res = await api.authStatus();
+    state.authRequired = Boolean(res?.auth_required);
+    if (!state.authRequired || res?.authenticated) {
+      enterAppShell();
+      return;
+    }
+    const hadStored = Boolean(getStoredToken());
+    if (hadStored) {
+      clearStoredToken();
+      showLoginScreen('本地保存的 API Key 已失效，请重新登录。');
+    } else {
+      showLoginScreen('');
+    }
+  } catch (err) {
+    showBootScreen(`
+      <div class="login-card" style="max-width:400px;text-align:center;">
+        <div class="banner-title">无法连接服务端</div>
+        <div class="banner-desc mt-2">${escapeHtml(err.message || '网络请求失败')}</div>
+        <button id="auth-boot-retry" class="btn btn-primary mt-4" type="button">重新连接</button>
+      </div>
+    `);
+    document.getElementById('auth-boot-retry')?.addEventListener('click', checkAuthAndBoot);
   }
 }
 
@@ -417,11 +502,15 @@ async function runQuickTestPush() {
       resultsEl.innerHTML = list
         .map((r) => {
           const cm = clientMeta(r.client);
+          const target = String(r.target || '').trim();
           return `
             <div class="delivery-card">
               <div class="delivery-card-top">
-                <strong>${escapeHtml(cm.name)}</strong>
-                <div style="display:flex;align-items:center;gap:6px;">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                  <strong>${escapeHtml(cm.name)}</strong>
+                  ${target ? `<span class="pill pill-info">${escapeHtml(target)}</span>` : ''}
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                   ${r.status_code ? `<span class="pill pill-neutral mono">HTTP ${escapeHtml(r.status_code)}</span>` : ''}
                   <span class="pill pill-neutral mono">${escapeHtml(r.duration_ms ?? 0)} ms</span>
                   ${r.success ? '<span class="pill pill-success">成功</span>' : '<span class="pill pill-emergency">失败</span>'}
@@ -476,7 +565,7 @@ export function updateChromeFromOverview(data) {
   }
 
   state.authRequired = Boolean(data.auth_required);
-  updateTokenIndicator();
+  updateAuthUI();
 }
 
 async function pollTopbarHealth() {
@@ -539,7 +628,6 @@ function createViewContext() {
     openAlertDetail,
     confirm: confirmDialog,
     onOverviewUpdated: updateChromeFromOverview,
-    openTokenModal,
   };
 }
 
@@ -604,9 +692,10 @@ function startAutoRefresh() {
 function init() {
   applyTheme(document.documentElement.getAttribute('data-theme') || 'light');
 
-  setAuthPromptHandler((reason) => openTokenModal(reason));
-  onTokenChange(() => updateTokenIndicator());
-  updateTokenIndicator();
+  setUnauthorizedHandler((reason) => {
+    state.authRequired = true;
+    showLoginScreen(reason);
+  });
 
   // Sidebar webhook copy
   const webhookUrlEl = document.getElementById('sidebar-webhook-url');
@@ -629,8 +718,9 @@ function init() {
   document.getElementById('sidebar-close')?.addEventListener('click', () => setMobileSidebarOpen(false));
   document.getElementById('mobile-backdrop')?.addEventListener('click', () => setMobileSidebarOpen(false));
 
-  // Theme toggle
+  // Theme toggle (topbar + login screen)
   document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
+  document.getElementById('login-theme-toggle')?.addEventListener('click', toggleTheme);
 
   // Auto refresh toggle
   const refreshToggle = document.getElementById('auto-refresh-toggle');
@@ -652,40 +742,51 @@ function init() {
   document.getElementById('confirm-backdrop')?.addEventListener('click', () => finishConfirm(false));
   document.getElementById('confirm-ok')?.addEventListener('click', () => finishConfirm(true));
 
-  // Token modal bindings
-  document.getElementById('btn-token-lock')?.addEventListener('click', () => openTokenModal());
-  document.getElementById('token-modal-close')?.addEventListener('click', () => closeTokenModal(false));
-  document.getElementById('token-cancel-btn')?.addEventListener('click', () => closeTokenModal(false));
-  document.getElementById('token-backdrop')?.addEventListener('click', () => closeTokenModal(false));
-
-  document.getElementById('token-toggle-vis')?.addEventListener('click', () => {
-    const input = document.getElementById('token-input');
+  // Login screen & logout bindings
+  document.getElementById('login-toggle-vis')?.addEventListener('click', () => {
+    const input = document.getElementById('login-api-key');
     if (input) input.type = input.type === 'password' ? 'text' : 'password';
   });
 
-  document.getElementById('token-clear-btn')?.addEventListener('click', () => {
-    clearStoredToken();
-    const input = document.getElementById('token-input');
-    if (input) input.value = '';
-    showToast('已清除本地保存的 API Token', 'info');
-    closeTokenModal(false);
-  });
-
-  document.getElementById('token-form')?.addEventListener('submit', (e) => {
+  document.getElementById('login-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = document.getElementById('token-input');
-    const errEl = document.getElementById('token-error');
+    const input = document.getElementById('login-api-key');
+    const submitBtn = document.getElementById('login-submit-btn');
     const val = (input?.value || '').trim();
     if (!val) {
-      if (errEl) {
-        errEl.textContent = '请输入有效的 API 令牌，或点击“清除本地令牌”。';
-        errEl.classList.remove('hidden');
-      }
+      setLoginError('请输入 API Key');
+      input?.focus();
       return;
     }
-    setStoredToken(val);
-    showToast('API 令牌已保存', 'success', 2000);
-    closeTokenModal(true);
+
+    setLoginError('');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="spinner"></span><span>验证中...</span>';
+    }
+    try {
+      const res = await api.login(val);
+      setStoredToken(val);
+      state.authRequired = Boolean(res?.auth_required ?? true);
+      if (input) input.value = '';
+      enterAppShell();
+      showToast('登录成功', 'success', 2000);
+    } catch (err) {
+      setLoginError(err.message || 'API Key 无效，请检查后重试');
+      input?.focus();
+      input?.select();
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '登录控制台';
+      }
+    }
+  });
+
+  document.getElementById('btn-logout')?.addEventListener('click', () => {
+    clearStoredToken();
+    showLoginScreen('');
+    showToast('已退出登录', 'info', 2000);
   });
 
   // Quick test modal bindings
@@ -698,9 +799,7 @@ function init() {
   // Escape key closes open overlays
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (!document.getElementById('token-modal')?.classList.contains('hidden')) {
-      closeTokenModal(false);
-    } else if (!document.getElementById('confirm-modal')?.classList.contains('hidden')) {
+    if (!document.getElementById('confirm-modal')?.classList.contains('hidden')) {
       finishConfirm(false);
     } else if (!document.getElementById('quick-test-modal')?.classList.contains('hidden')) {
       closeQuickTestModal();
@@ -710,15 +809,14 @@ function init() {
   });
 
   window.addEventListener('hashchange', () => {
+    if (!state.authenticated) return;
     const next = parseRouteFromHash();
     if (next !== state.route) {
       mountRoute(next);
     }
   });
 
-  pollTopbarHealth();
-  mountRoute(parseRouteFromHash());
-  startAutoRefresh();
+  checkAuthAndBoot();
 }
 
 document.addEventListener('DOMContentLoaded', init);

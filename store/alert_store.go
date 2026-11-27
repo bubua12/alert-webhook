@@ -18,9 +18,10 @@ import (
 
 const defaultAlertStoreCapacity = 1000
 
-// DeliveryResult records the outcome of sending an alert to one notification channel.
+// DeliveryResult records the outcome of sending an alert to one notification channel target.
 type DeliveryResult struct {
 	Client     string `json:"client"`
+	Target     string `json:"target,omitempty"`
 	Success    bool   `json:"success"`
 	StatusCode int    `json:"status_code,omitempty"`
 	DurationMs int64  `json:"duration_ms"`
@@ -88,11 +89,13 @@ type SourceStats struct {
 
 // ChannelStats aggregates delivery metrics per channel.
 type ChannelStats struct {
-	Enabled      bool    `json:"enabled"`
-	Configured   bool    `json:"configured"`
-	Sent         int     `json:"sent"`
-	Failed       int     `json:"failed"`
-	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	Enabled         bool    `json:"enabled"`
+	Configured      bool    `json:"configured"`
+	ConfiguredCount int     `json:"configured_count"`
+	TotalCount      int     `json:"total_count"`
+	Sent            int     `json:"sent"`
+	Failed          int     `json:"failed"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`
 }
 
 // TimelineBucket aggregates hourly alert counts in Asia/Shanghai.
@@ -364,6 +367,11 @@ func matchesAlertKeyword(rec AlertRecord, keyword string) bool {
 			return true
 		}
 	}
+	for _, d := range rec.Deliveries {
+		if strings.Contains(strings.ToLower(d.Target), keyword) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -427,15 +435,19 @@ func (s *AlertStore) StatsAt(cfg *config.AppConfig, now time.Time) OverviewStats
 
 	for _, ch := range config.SupportedClients {
 		enabled := cfg != nil && slices.Contains(cfg.Clients, ch)
-		configured := false
+		configuredCount := 0
+		totalCount := 0
 		if cfg != nil {
 			if n, ok := cfg.Notifiers[ch]; ok {
-				configured = config.IsConfiguredWebhookURL(n.WebhookURL)
+				totalCount = len(n.AllTargets())
+				configuredCount = len(n.ConfiguredTargets())
 			}
 		}
 		byChannel[ch] = ChannelStats{
-			Enabled:    enabled,
-			Configured: configured,
+			Enabled:         enabled,
+			Configured:      configuredCount > 0,
+			ConfiguredCount: configuredCount,
+			TotalCount:      totalCount,
 		}
 	}
 

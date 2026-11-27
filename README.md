@@ -86,7 +86,7 @@ flowchart LR
 | 路径 | 核心文件 / 包 | 职责说明 |
 | :--- | :--- | :--- |
 | `main.go` | `main` | 解析 `-config` 与 `ALERT_WEBHOOK_CONFIG`，初始化多路日志（`stdout` + 文件 + `LogBuffer`），注册 `web.StaticFS()` 并启动服务 |
-| `config/` | `webhook_config.go`, `manager.go`, `init_webhook.go` | 配置结构体、默认值、17 个环境变量覆盖、校验器、通配符过滤引擎、线程安全 `ConfigManager` 与原子落盘 |
+| `config/` | `webhook_config.go`, `manager.go`, `init_webhook.go` | 配置结构体、默认值、`ALERT_WEBHOOK_*` 环境变量覆盖、校验器、通配符过滤引擎、线程安全 `ConfigManager` 与原子落盘 |
 | `store/` | `alert_store.go`, `log_buffer.go` | 1000 条告警环形缓冲 + JSONL 持久化 + 24 小时时间线聚合统计；500 条日志环形缓冲与级别分类 |
 | `service/` | `server_manager.go`, `api_handler.go` | Gin 路由、可选 `auth_token` 中间件、`/healthz` `/readyz`、15 个 `/api/*` 控制面端点、5 秒优雅停机 |
 | `service/` | `alertmanager_handler.go`, `webhook_sender.go` | Webhook 接收、按通道并发推送、企业微信分批、10 秒 HTTP 超时、企微/钉钉/飞书业务错误码校验 |
@@ -353,15 +353,25 @@ spec:
 
 > 提示：在 Kubernetes 中若将 `ConfigMap` 只读挂载到 `/app/config`，环境变量覆盖仍然生效；如需从 Web 控制台持久化写回 `config.yaml`，请改用 `PersistentVolumeClaim` 挂载 `/app/config` 与 `/app/data`。
 
-### 2.5 源码 / 二进制与 Systemd 部署
+### 2.5 一键打包、脚本启停与 Systemd 部署
 
 要求 **Go 1.24+**（修改前端静态文件无需 Node 打包，Go 编译时自动嵌入）：
 
 ```bash
-# 本地编译（自动嵌入 web/static 与 time/tzdata）
-make build
+# 方式一：打包开箱即用发布目录与压缩包（含二进制、start.sh/stop.sh、配置模板与 .env.example）
+make package
+# 若在 macOS/本地交叉打包 Linux 服务器版本：
+make package-linux        # 输出 dist/alert-webhook-linux-amd64/ 与 .tar.gz
+make package-linux-arm64  # 输出 dist/alert-webhook-linux-arm64/ 与 .tar.gz
 
-# 指定配置启动（省略 -config 时依次读取 ALERT_WEBHOOK_CONFIG 或 ./config.yaml）
+# 解压或进入打包目录，按需配置 .env 后直接一键启动：
+cd dist/alert-webhook-linux-amd64
+cp .env.example .env      # 编辑 .env 设置 API_KEY、Webhook 地址等（不建 .env 也可直接启动）
+./start.sh                # 自动读取同目录 .env、检查进程存活并输出 PID/日志路径
+./stop.sh                 # 优雅停机（最长等待 10s）
+
+# 方式二：仅在当前目录编译单个二进制
+make build
 ./alert-webhook -config=/etc/alert-webhook/config.yaml
 ```
 
@@ -440,6 +450,8 @@ server {
 | **企业微信 (`wechat`)** | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<key>` | `markdown` | 单条消息上限 **4096 字节**，程序按 **4000 字节**安全上限自动拆分多条告警并间隔 `200ms` 顺序发送（若单条告警本身超 4000 字节，仍会单独尝试投递）。企业微信群机器人官方限频约 20 条/分钟。 |
 | **钉钉 (`dingtalk`)** | `https://oapi.dingtalk.com/robot/send?access_token=<token>` | `markdown` | 钉钉机器人强制要求至少启用一种安全设置。**本程序当前仅传 Webhook URL（未实现加签逻辑）**，请在钉钉群机器人安全设置中选择 **「自定义关键字」**（例如填入 `Prometheus` 或 `告警`）或 **「IP 地址（段）」白名单**；否则会返回 `errcode=310000`。 |
 | **飞书 (`feishu`)** | `https://open.feishu.cn/open-apis/bot/v2/hook/<token>` | `text` | 与钉钉同理，若飞书机器人启用了安全校验，请配置 **「自定义关键词」**（如 `Prometheus`、`告警`）或 **「IP 白名单」**（目前暂未实现签名校验）。 |
+
+> **多 Webhook 目标并发推送与向后兼容**：三个内置渠道（`wechat`、`dingtalk`、`feishu`）均支持配置**多个 Webhook 地址**（通过 `notifiers.<name>.webhooks` 列表声明对象 `{ name, url, enabled }` 或 URL 字符串，也可通过环境变量传入逗号分隔多地址）。告警触发时会向每个渠道下所有**已启用且有效**的 Webhook 目标并发推送，并独立记录各目标的投递回执与耗时；同时 **100% 向后兼容**旧版单地址 `notifiers.<name>.webhook_url` 配置。
 
 ### 3.2 告警级别映射、配色与时区
 
@@ -542,8 +554,8 @@ server {
 ### 4.1 加载优先级与热更新边界
 
 1. **配置文件路径解析优先级**：`命令行 -config 参数` > `环境变量 ALERT_WEBHOOK_CONFIG` > `./config.yaml`。如果目标文件不存在，程序会自动创建默认配置并正常启动。
-2. **字段值生效优先级**：`非空 ALERT_WEBHOOK_* 环境变量` > `config.yaml` > `程序内置默认值`。
-3. **环境变量启用渠道的特殊规则**：设置 `ALERT_WEBHOOK_WECHAT_URL` / `DINGTALK_URL` / `FEISHU_URL` 时，始终会覆盖内存中的 `notifiers.<client>.webhook_url`；但**只有当 `config.yaml` 中的 `client` 列表原本为空（`[]`）时**，程序才会自动把该渠道加入 `client` 启用列表；若 `config.yaml` 中已显式配置了 `client: [wechat]`，则不会擅自启用其他渠道。
+2. **`.env` 自动加载与优先级**：程序启动时会自动查找并加载 `.env`（顺序：`ALERT_WEBHOOK_ENV_FILE` > 当前目录 `./.env` > 可执行文件同目录 `.env`），且**绝不覆盖**操作系统中已存在的环境变量。字段值生效优先级：`系统环境变量` > `.env` > `config.yaml` > `程序内置默认值`。
+3. **环境变量启用渠道的特殊规则**：设置 `ALERT_WEBHOOK_WECHAT_URL` / `ALERT_WEBHOOK_WECHAT_URLS`、`ALERT_WEBHOOK_DINGTALK_URL` / `ALERT_WEBHOOK_DINGTALK_URLS` 或 `ALERT_WEBHOOK_FEISHU_URL` / `ALERT_WEBHOOK_FEISHU_URLS`（均支持逗号分隔多个 URL）时，始终会覆盖内存中的 `notifiers.<client>` 目标列表（`webhooks` 与主地址 `webhook_url`）；但**只有当 `config.yaml` 中的 `client` 列表原本为空（`[]`）时**，程序才会自动把该渠道加入 `client` 启用列表；若 `config.yaml` 中已显式配置了 `client: [wechat]`，则不会擅自启用其他渠道。
 4. **热更新行为**：在 Web 控制台保存配置、调用 `PUT /api/config` / `PUT /api/config/yaml` 或 `POST /api/config/reload` 后，除 `server.port`、`server.data_dir`、`server.log_dir` 三项变更会返回 `restart_required: true` 提示需要重启进程/容器外，通知渠道、过滤规则、ClickHouse 与 Kafka 监控任务均立即**无重启热生效**（旧巡检任务会被优雅 `Stop()` 后按新配置重建）。
 
 ### 4.2 完整配置字段手册
@@ -556,7 +568,8 @@ server {
 | `server.data_dir` | `string` | `"./data"` | `alerts.jsonl` 持久化目录 | 否（需重启） |
 | `server.log_dir` | `string` | `"./logs"` | `alter-server.log` 轮转日志目录 | 否（需重启） |
 | `client` | `string[]` | `[]` | 启用的渠道列表，支持 `"wechat"` / `"dingtalk"` / `"feishu"` | 是 |
-| `notifiers.<name>.webhook_url` | `string` | `""` | 对应渠道 Webhook URL（含 `xxxxxx` 等占位符将被识别为未配置） | 是 |
+| `notifiers.<name>.webhooks` | `WebhookTarget[] \| string[]` | `[]` | 多 Webhook 目标列表（适用于 `wechat` / `dingtalk` / `feishu`）。每项支持 `{ name, url, enabled }` 对象（`name` 可选备注名；`enabled` 可选，默认 `true`）或 URL 字符串简写；含 `xxxxxx` 等占位符将被识别为未配置 | 是 |
+| `notifiers.<name>.webhook_url` | `string` | `""` | **兼容旧版单地址字段**：对应渠道单个 Webhook URL（含 `xxxxxx` 等占位符将被识别为未配置）。100% 向后兼容；若与 `webhooks` 同时配置，将自动合并去重 | 是 |
 | `filter.alert_name.include` | `string[]` | `[]` | 告警名称白名单，支持 `*` 通配符 | 是 |
 | `filter.alert_name.exclude` | `string[]` | `[]` | 告警名称黑名单，优先级高于 `include` | 是 |
 | `filter.severity.include` | `string[]` | `[]` | 告警级别白名单，支持 `*` 通配符 | 是 |
@@ -580,18 +593,41 @@ server {
 | `kafka_monitor.monitored_groups` | `string[]` | `[]` | 指定监控的消费组 ID 列表，为空则监控全部 | 是 |
 | `kafka_monitor.ignored_groups` | `string[]` | `[]` | 忽略的消费组 ID 列表，优先级高于 `monitored_groups` | 是 |
 
+**多 Webhook 配置写法示例（与旧版 `webhook_url` 完全向后兼容）：**
+
+```yaml
+notifiers:
+  wechat:
+    webhooks:
+      - name: "运维主群"
+        url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=key-1"
+        enabled: true
+      - name: "值班备用群"
+        url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=key-2"
+        enabled: false
+      - "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=key-3"  # 字符串简写（默认 enabled: true）
+  dingtalk:
+    webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=legacy-single-token"  # 旧版单地址写法仍完全支持
+```
+
 ### 4.3 环境变量一览表
 
 | 环境变量 | 容器默认值 / 示例 | 说明 |
 | :--- | :--- | :--- |
 | `ALERT_WEBHOOK_CONFIG` | `/app/config/config.yaml` | 配置文件路径（低于 `-config` 参数） |
+| `ALERT_WEBHOOK_ENV_FILE` | `""` | 指定 `.env` 文件路径（未设置时自动读取 `./.env` 或程序同目录 `.env`） |
+| `API_KEY` | `""` | Web 控制台独立登录页密钥与 `/api/*` 访问密钥（优先级高于 `ALERT_WEBHOOK_API_KEY` 与 `ALERT_WEBHOOK_AUTH_TOKEN`） |
+| `ALERT_WEBHOOK_API_KEY` | `""` | `API_KEY` 别名，用于开启 Web 登录页与 `/api/*` 鉴权 |
 | `ALERT_WEBHOOK_PORT` | `0.0.0.0:18082` | 覆盖 `server.port` |
-| `ALERT_WEBHOOK_AUTH_TOKEN` | `""` | 覆盖 `server.auth_token` |
+| `ALERT_WEBHOOK_AUTH_TOKEN` | `""` | 兼容旧版变量名：覆盖 `server.auth_token`（优先级低于 `API_KEY`） |
 | `ALERT_WEBHOOK_DATA_DIR` | `/app/data` | 覆盖 `server.data_dir` |
 | `ALERT_WEBHOOK_LOG_DIR` | `/app/logs` | 覆盖 `server.log_dir` |
-| `ALERT_WEBHOOK_WECHAT_URL` | `""` | 覆盖企业微信 Webhook URL |
-| `ALERT_WEBHOOK_DINGTALK_URL` | `""` | 覆盖钉钉 Webhook URL |
-| `ALERT_WEBHOOK_FEISHU_URL` | `""` | 覆盖飞书 Webhook URL |
+| `ALERT_WEBHOOK_WECHAT_URL` | `""` | 覆盖企业微信 Webhook URL；支持单个地址或英文逗号 `,` 分隔的多地址（自动去重） |
+| `ALERT_WEBHOOK_WECHAT_URLS` | `""` | `ALERT_WEBHOOK_WECHAT_URL` 复数别名（同样支持逗号分隔多地址；同时设置时按顺序合并去重） |
+| `ALERT_WEBHOOK_DINGTALK_URL` | `""` | 覆盖钉钉 Webhook URL；支持单个地址或英文逗号 `,` 分隔的多地址（自动去重） |
+| `ALERT_WEBHOOK_DINGTALK_URLS` | `""` | `ALERT_WEBHOOK_DINGTALK_URL` 复数别名（同样支持逗号分隔多地址；同时设置时按顺序合并去重） |
+| `ALERT_WEBHOOK_FEISHU_URL` | `""` | 覆盖飞书 Webhook URL；支持单个地址或英文逗号 `,` 分隔的多地址（自动去重） |
+| `ALERT_WEBHOOK_FEISHU_URLS` | `""` | `ALERT_WEBHOOK_FEISHU_URL` 复数别名（同样支持逗号分隔多地址；同时设置时按顺序合并去重） |
 | `ALERT_WEBHOOK_CLICKHOUSE_HOST` | `""` | 覆盖 `clickhouse.host` |
 | `ALERT_WEBHOOK_CLICKHOUSE_PORT` | `""` | 覆盖 `clickhouse.port`（`1-65535`） |
 | `ALERT_WEBHOOK_CLICKHOUSE_DB` | `""` | 覆盖 `clickhouse.database` |
@@ -726,15 +762,16 @@ GET <kafka_ui_url>/api/clusters/<cluster_name>/consumer-groups/paged?page=1&perP
 
 | 页面 | 核心功能 |
 | :--- | :--- |
-| **监控总览** | 4 项核心 KPI、24 小时趋势堆叠图、级别分布环形图、渠道平均延迟健康条、Webhook 接收地址一键复制、ClickHouse/Kafka 一键立即检测 |
-| **告警记录** | 按状态 (`firing`/`resolved`)、投递结果 (`sent`/`partial`/`failed`/`filtered`)、来源 (`alertmanager`/`traffic`/`kafka`/`test`)、级别与关键词分页搜索；点击任意行滑出详情抽屉查看全量 Labels、Annotations、过滤原因和各渠道耗时/响应体；支持导出 JSON 与清空 |
-| **配置中心** | 5 个子标签覆盖通知渠道（含未保存前的临时 URL 连通性测试）、过滤规则（标签编辑 + 在线规则测试器）、流量监控（`B/KB/MB/GB` 单位换算 + ClickHouse 探针）、Kafka 监控（消费组拉取）、服务与原生 YAML 编辑器（导入/下载 + 自动生成 `alertmanager.yml` 片段） |
-| **调试沙箱** | 4 套内置告警场景模板，可一键 **Dry Run 预览**三平台渲染结果（不污染统计）或 **真实发送测试**并观察各渠道返回码 |
+| **监控总览** | 4 项核心 KPI、24 小时趋势堆叠图、级别分布环形图、渠道健康条（展示多目标就绪数量与平均延迟）、Webhook 接收地址一键复制、快速测试弹窗（含各目标回执）与 ClickHouse/Kafka 一键立即检测 |
+| **告警记录** | 按状态 (`firing`/`resolved`)、投递结果 (`sent`/`partial`/`failed`/`filtered`)、来源 (`alertmanager`/`traffic`/`kafka`/`test`)、级别与关键词（含目标名称）分页搜索；列表展示各目标投递状态徽章，点击任意行滑出详情抽屉查看全量 Labels、Annotations、过滤原因以及每个渠道与具体目标（`target`）的投递回执、耗时和响应体；支持导出 JSON 与清空 |
+| **配置中心** | 5 个子标签覆盖通知渠道（每个渠道支持添加/删除多个 Webhook、自定义备注名、独立启用/停用开关、密钥显隐切换及未保存前的单目标测试与「测试全部」）、过滤规则（标签编辑 + 在线规则测试器）、流量监控（`B/KB/MB/GB` 单位换算 + ClickHouse 探针）、Kafka 监控（消费组拉取）、服务与原生 YAML 编辑器（导入/下载 + 自动生成 `alertmanager.yml` 片段） |
+| **调试沙箱** | 4 套内置告警场景模板（展示各渠道已启用目标数），可一键 **Dry Run 预览**三平台渲染结果（不污染统计）或 **真实发送测试**并查看每个目标（`target`）的独立投递回执与返回码 |
 | **运行日志** | 查看内存缓冲的最近 500 条运行日志，支持 `ALL`/`INFO`/`WARN`/`ERROR` 筛选、关键字查找、自动滚动与一键复制 |
 
-**关于 `auth_token` 鉴权：**
-- 一旦通过 `server.auth_token` 或 `ALERT_WEBHOOK_AUTH_TOKEN` 设置非空口令，所有 `/api/*` 请求均会经过 `AuthMiddleware`（基于 `crypto/subtle.ConstantTimeCompare` 常量时间比对），需携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 `401 {"error":"unauthorized","auth_required":true}`；Web 控制台收到 401 会自动弹出解锁窗口。
-- `POST /webhook-alert`、`GET /healthz`、`GET /readyz` 以及静态页面资源始终保持免 Token 访问，不阻断 Alertmanager 推告警或 K8s/Docker 探针。
+**关于 `API_KEY` 独立登录页与接口鉴权：**
+- 一旦在 `.env` 中设置了 `API_KEY`（或通过 `ALERT_WEBHOOK_API_KEY`、`ALERT_WEBHOOK_AUTH_TOKEN`、`config.yaml` 的 `server.auth_token` 设置非空密钥），访问 Web 控制台会先进入**独立登录页面**（主控制台隐藏不渲染），用户输入正确 `API_KEY` 通过 `POST /api/auth/login` 验证后方可进入控制台；右上角支持点击「退出登录」注销本地凭证。
+- 所有受保护的 `/api/*` 请求均经过 `AuthMiddleware`（基于 `crypto/subtle.ConstantTimeCompare` 常量时间比对），支持 `X-API-Key: <key>`、`X-API-Token: <key>` 或 `Authorization: Bearer <key>`，否则返回 `401 {"error":"unauthorized","auth_required":true}` 并由前端自动退回登录页。
+- `POST /webhook-alert`、`GET /healthz`、`GET /readyz`、`GET /api/auth/status`、`POST /api/auth/login` 以及静态页面资源保持公开访问，不阻断 Alertmanager 推告警或健康探针。
 
 ---
 
@@ -747,6 +784,8 @@ GET <kafka_ui_url>/api/clusters/<cluster_name>/consumer-groups/paged?page=1&perP
 | `POST /webhook-alert` | 无 | 接收 Alertmanager Webhook：`200`（全部发送成功、全部被过滤、无告警或 0 渠道仅记账）、`400`（JSON 无效）、`500`（部分或全部渠道推送失败） |
 | `GET /healthz` | 无 | 存活探针：返回 `{"status":"ok","uptime_seconds":...,"version":"1.2.0"}` |
 | `GET /readyz` | 无 | 就绪探针：返回 `{"status":"ready","config_loaded":true,"enabled_clients":[...]}` |
+| `GET /api/auth/status` | 无 | 查询控制台登录保护状态：`{"auth_required":bool,"authenticated":bool}` |
+| `POST /api/auth/login` | 无 | 登录校验：`{"api_key":"..."}`，匹配返回 `200`，失败返回 `401` |
 | `GET /api/overview` | 可选 | 返回版本、启动时间、`setup_complete`、聚合统计、`timeline`（24h）、巡检服务状态及最近 8 条告警 |
 | `GET /api/alerts` | 可选 | 分页查询：`page`、`page_size`、`status`、`delivery_state`、`source`、`severity`、`q` |
 | `DELETE /api/alerts` | 可选 | 清空告警历史（内存 + `alerts.jsonl`） |
@@ -754,7 +793,7 @@ GET <kafka_ui_url>/api/clusters/<cluster_name>/consumer-groups/paged?page=1&perP
 | `PUT /api/config` | 可选 | 提交 `AppConfig` JSON，校验、原子落盘并热重载；返回 `{ ok, config, yaml, warnings, restart_required }` |
 | `PUT /api/config/yaml` | 可选 | 提交 `{"yaml":"..."}` 原始 YAML，校验、原子落盘并热重载 |
 | `POST /api/config/reload` | 可选 | 从磁盘重新加载 `config.yaml` 并热重载后台服务 |
-| `POST /api/test/notifier` | 可选 | 测连：`{"client":"wechat\|dingtalk\|feishu\|all","webhook_url":"可选临时地址"}` |
+| `POST /api/test/notifier` | 可选 | 多目标测连：支持单目标 `{"client":"wechat\|dingtalk\|feishu\|all","webhook_url":"可选临时地址","target":"可选目标名称"}` 或批量列表 `{"client":"wechat\|dingtalk\|feishu","webhooks":[{"name":"...","url":"...","enabled":true}]}`；省略 `webhook_url`/`webhooks` 时测试对应渠道（或 `all` 全部已启用渠道）下所有已启用目标，结果按目标逐条返回（含 `target` 字段） |
 | `POST /api/test/clickhouse` | 可选 | 测试 ClickHouse 连接并返回延迟与最近 1 分钟日志数（可传临时 `ClickHouseConfig`） |
 | `POST /api/test/kafka` | 可选 | 测试 Kafka UI 连接并返回消费组列表（可传临时 `KafkaMonitorConfig`） |
 | `POST /api/filter/test` | 可选 | 测规则：`{"alert_name":"...","severity":"...","filter":{可选临时规则}}`，返回 `FilterDecision` |
@@ -791,11 +830,13 @@ curl -X POST http://127.0.0.1:18082/webhook-alert \
 **2. 带 Token 鉴权测试临时通知渠道（无需先保存配置）**
 
 ```bash
+# 单目标测试（也可传 "webhooks": [{"name":"运维主群","url":"...","enabled":true}, ...] 批量测试多目标）
 curl -s -X POST http://127.0.0.1:18082/api/test/notifier \
   -H "Content-Type: application/json" \
   -H "X-API-Token: your-token" \
   -d '{
     "client": "wechat",
+    "target": "运维主群",
     "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your-key"
   }'
 ```
@@ -808,6 +849,7 @@ curl -s -X POST http://127.0.0.1:18082/api/test/notifier \
   "results": [
     {
       "client": "wechat",
+      "target": "运维主群",
       "success": true,
       "status_code": 200,
       "duration_ms": 142,
@@ -904,11 +946,12 @@ make run
 ### 更新日志
 
 - **v1.2.0**
-  - 新增零外部 CDN 依赖的内置 Web 控制台（监控总览、告警审计抽屉、可视化配置中心与热更新、调试沙箱、实时日志，支持浅色/深色主题与可选 `auth_token` 鉴权）。
-  - 新增 `/healthz`、`/readyz` 探针与全量 `/api/*` REST 控制面接口。
-  - 支持零配置启动、原子配置持久化与 17 个 `ALERT_WEBHOOK_*` 环境变量覆盖。
-  - 新增多阶段非 root [Dockerfile](Dockerfile)、[docker-compose.yml](docker-compose.yml)、[.env.example](.env.example) 与 [Makefile](Makefile)。
-  - 修复 `config` 包 `init()` 副作用导致的 `go test` 冲突、并发推送竞态、缺少 HTTP 超时与 HTTP 200 业务码漏检、无 `tzdata` 环境下时区加载隐患、ClickHouse 硬编码库名与 `defer rows.Close()` 致命退出风险，并实现标准输出+轮转文件+内存缓冲三路日志及 5 秒优雅停机。
+  - 新增零外部 CDN 依赖的内置 Web 控制台（监控总览、告警审计抽屉、可视化配置中心与热更新、调试沙箱、实时运行日志，支持浅色/深色主题切换）。
+  - 新增全渠道（企业微信 / 钉钉 / 飞书）多 Webhook 并发推送支持：支持备注名、单目标独立启停、`webhooks` 列表与逗号分隔环境变量配置，并逐目标记录投递回执与延迟统计，100% 向后兼容旧版 `webhook_url`。
+  - 新增零依赖 `.env` 原生自动加载与独立 `API_KEY` 登录页鉴权（支持 `GET /api/auth/status`、`POST /api/auth/login` 与 `X-API-Key` 请求头），未认证时完全隐藏控制台主界面，Webhook 与探针端点不受影响。
+  - 新增 `/healthz`、`/readyz` 探针与全量 `/api/*` REST 控制面接口，支持零配置启动与配置原子落盘热生效。
+  - 新增多阶段非 root [Dockerfile](Dockerfile)、[docker-compose.yml](docker-compose.yml)、[.env.example](.env.example)、[Makefile](Makefile) 多平台开箱即用打包（`package` / `package-linux` / `package-linux-arm64`）、优化后的 `scripts/start.sh` / `scripts/stop.sh` 及 GitHub Actions 自动 Release 流水线。
+  - 修复 `config` 包 `init()` 副作用导致的 `go test` 冲突、并发推送竞态、缺少 HTTP 超时与 HTTP 200 业务码漏检、无 `tzdata` 环境下时区加载隐患、ClickHouse 硬编码库名与 `defer rows.Close()` 致命退出风险、网络报错日志可能泄露 Webhook 密钥的问题，并实现标准输出+轮转文件+内存缓冲三路日志及 5 秒优雅停机。
 - **v1.1.0 (2025-12-05)**：新增基于 Kafka UI API 的消费者组积压监控。
 - **v1.0.1 (2025-09-16)**：新增基于 ClickHouse 的 Nginx 大流量异常告警。
 - **v1.0.0-bugfix (2025-09-03)**：新增告警过滤规则与企业微信长消息自动分批。

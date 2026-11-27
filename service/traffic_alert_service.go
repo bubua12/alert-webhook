@@ -206,7 +206,7 @@ func (t *TrafficAlertService) generateAndSendAlert(stat TrafficStats) bool {
 		return false
 	}
 
-	deliveries := SendToClients(data, cfg.Clients, cfg.NotifierURLMap())
+	deliveries := SendToClientTargets(data, cfg.Clients, cfg.NotifierTargetsMap())
 	deliveryState := ComputeDeliveryState(deliveries)
 	if t.alertStore != nil {
 		t.alertStore.Add(BuildAlertRecord("traffic", data, alert, deliveryState, "", deliveries))

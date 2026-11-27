@@ -251,6 +251,10 @@ export function renderChannelHealth(container, byChannel = {}) {
       const stat = (byChannel && byChannel[key]) || {};
       const enabled = Boolean(stat.enabled);
       const configured = Boolean(stat.configured);
+      const rawCount = stat.configured_count;
+      const configuredCount = rawCount !== undefined && rawCount !== null && Number.isFinite(Number(rawCount))
+        ? Number(rawCount)
+        : (configured ? 1 : 0);
       const sent = Number(stat.sent) || 0;
       const failed = Number(stat.failed) || 0;
       const avgLatency = Number(stat.avg_latency_ms) || 0;
@@ -259,10 +263,11 @@ export function renderChannelHealth(container, byChannel = {}) {
       const failPct = total > 0 ? (failed / total) * 100 : 0;
       const rateLabel = total > 0 ? `${Math.round(okPct)}%` : '--';
 
+      const readyLabel = configuredCount > 1 ? `已就绪 · ${configuredCount} 个目标` : '已就绪';
       const statusInline = !enabled
         ? '<span class="status-inline is-off"><span class="dot"></span>未启用</span>'
         : configured
-          ? '<span class="status-inline is-ok"><span class="dot"></span>已就绪</span>'
+          ? `<span class="status-inline is-ok"><span class="dot"></span>${escapeHtml(readyLabel)}</span>`
           : '<span class="status-inline is-warn"><span class="dot"></span>待配置 URL</span>';
 
       return `

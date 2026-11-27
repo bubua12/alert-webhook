@@ -325,7 +325,7 @@ func (k *KafkaMonitorService) generateAndSendAlert(cfg *config.AppConfig, group 
 		return false
 	}
 
-	deliveries := SendToClients(data, cfg.Clients, cfg.NotifierURLMap())
+	deliveries := SendToClientTargets(data, cfg.Clients, cfg.NotifierTargetsMap())
 	deliveryState := ComputeDeliveryState(deliveries)
 	if k.alertStore != nil {
 		k.alertStore.Add(BuildAlertRecord("kafka", data, alert, deliveryState, "", deliveries))

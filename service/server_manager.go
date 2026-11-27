@@ -60,7 +60,21 @@ func NewServerManager(cfgMgr *config.ConfigManager, alertStore *store.AlertStore
 	}
 }
 
-// AuthMiddleware protects /api/* endpoints when server.auth_token is configured.
+// extractAPIKey retrieves the API key/token from X-API-Key, X-API-Token, or Authorization: Bearer.
+func extractAPIKey(c *gin.Context) string {
+	for _, header := range []string{"X-API-Key", "X-API-Token"} {
+		if v := strings.TrimSpace(c.GetHeader(header)); v != "" {
+			return v
+		}
+	}
+	authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+	if len(authHeader) >= 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
+		return strings.TrimSpace(authHeader[7:])
+	}
+	return ""
+}
+
+// AuthMiddleware protects /api/* endpoints when server.auth_token (or API_KEY) is configured.
 func AuthMiddleware(cfgMgr *config.ConfigManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if cfgMgr == nil {
@@ -73,14 +87,7 @@ func AuthMiddleware(cfgMgr *config.ConfigManager) gin.HandlerFunc {
 			return
 		}
 
-		provided := strings.TrimSpace(c.GetHeader("X-API-Token"))
-		if provided == "" {
-			authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
-			if len(authHeader) >= 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
-				provided = strings.TrimSpace(authHeader[7:])
-			}
-		}
-
+		provided := extractAPIKey(c)
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error":         "unauthorized",
@@ -103,10 +110,12 @@ func (sm *ServerManager) BuildRouter() *gin.Engine {
 
 	apiHandler := NewAPIHandler(sm.cfgMgr, sm.alertStore, sm.logBuffer, sm.svcMgr, sm.startedAt)
 
-	// Public operational & webhook endpoints (never gated by auth token)
+	// Public operational, auth handshake, & webhook endpoints (never gated by AuthMiddleware)
 	router.POST("/webhook-alert", GinAlertHandler(sm.cfgMgr, sm.alertStore))
 	router.GET("/healthz", apiHandler.HandleHealthz)
 	router.GET("/readyz", apiHandler.HandleReadyz)
+	router.GET("/api/auth/status", apiHandler.HandleAuthStatus)
+	router.POST("/api/auth/login", apiHandler.HandleAuthLogin)
 
 	// Control-plane REST API
 	api := router.Group("/api")

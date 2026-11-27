@@ -90,7 +90,7 @@ func GinAlertHandler(cfgMgr *config.ConfigManager, alertStore *store.AlertStore)
 		}
 
 		log.Printf("过滤后剩余 %d 个告警将被发送", len(allowedAlerts))
-		deliveries := SendToClients(data, cfg.Clients, cfg.NotifierURLMap())
+		deliveries := SendToClientTargets(data, cfg.Clients, cfg.NotifierTargetsMap())
 		deliveryState := ComputeDeliveryState(deliveries)
 
 		if alertStore != nil {
@@ -102,9 +102,14 @@ func GinAlertHandler(cfgMgr *config.ConfigManager, alertStore *store.AlertStore)
 		var failedClients []string
 		for _, d := range deliveries {
 			if !d.Success {
-				if d.Client == "wechat" && d.Batches > 1 {
+				switch {
+				case d.Target != "" && d.Client == "wechat" && d.Batches > 1:
+					failedClients = append(failedClients, fmt.Sprintf("%s(%s: %s)", d.Client, d.Target, d.Error))
+				case d.Target != "":
+					failedClients = append(failedClients, fmt.Sprintf("%s(%s)", d.Client, d.Target))
+				case d.Client == "wechat" && d.Batches > 1:
 					failedClients = append(failedClients, fmt.Sprintf("%s(%s)", d.Client, d.Error))
-				} else {
+				default:
 					failedClients = append(failedClients, d.Client)
 				}
 			}

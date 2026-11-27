@@ -197,6 +197,123 @@ input[type="radio"] {
 .text-sm { font-size: 12px; }
 .text-xs { font-size: 11px; }
 
+/* Auth Boot & Standalone Login Screen */
+.auth-boot-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-app);
+}
+
+.auth-boot-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.login-screen {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-app);
+}
+
+.login-theme-btn {
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  z-index: 20;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 410px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 26px 24px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.login-brand-logo {
+  width: 38px;
+  height: 38px;
+}
+
+.login-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.login-subtitle {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.login-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-error-box {
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(198, 54, 47, 0.25);
+  border-left: 3px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.login-submit {
+  width: 100%;
+  padding: 9px 14px;
+  font-size: 13px;
+}
+
+.login-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
 /* App Shell */
 .app-shell {
   display: flex;
@@ -777,15 +894,126 @@ input[type="radio"] {
   gap: 14px;
 }
 
+.channel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .channel-card {
   display: flex;
   flex-direction: column;
+}
+
+.channel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .channel-card-body {
   flex: 1;
   display: flex;
   flex-direction: column;
+}
+
+.webhook-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.webhook-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.webhook-item {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  padding: 10px 12px;
+  transition: border-color var(--transition), background var(--transition), opacity var(--transition);
+}
+
+.webhook-item:focus-within {
+  border-color: var(--border-strong);
+}
+
+.webhook-item.is-disabled {
+  opacity: 0.68;
+  border-style: dashed;
+  background: var(--bg-app);
+}
+
+.webhook-item.is-disabled .webhook-name-input,
+.webhook-item.is-disabled .webhook-url-wrap .form-control {
+  color: var(--text-muted);
+}
+
+.webhook-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.webhook-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--neutral-soft);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.webhook-item-row .webhook-name-input {
+  width: 200px;
+  flex: 0 0 200px;
+  min-width: 0;
+}
+
+.webhook-item-row .webhook-url-wrap {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+.webhook-item-row .webhook-url-wrap .form-control {
+  min-width: 0;
+}
+
+.webhook-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.webhook-item .delivery-card.webhook-test-result {
+  background: var(--bg-surface);
+}
+
+.delivery-pills-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 280px;
 }
 
 .channel-card-actions {
@@ -1771,6 +1999,7 @@ textarea.form-control {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .kv-table {
@@ -2062,6 +2291,27 @@ textarea.form-control {
   .grid-2 {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .webhook-item-row {
+    flex-wrap: wrap;
+  }
+
+  .webhook-item-row .webhook-name-input {
+    flex: 1 1 180px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .webhook-item-row .webhook-url-wrap {
+    flex: 1 1 100%;
+    min-width: 0;
+    order: 3;
+  }
+
+  .webhook-item-row .webhook-item-actions {
+    margin-left: auto;
+    order: 2;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2084,5 +2334,17 @@ textarea.form-control {
   .log-line {
     grid-template-columns: 64px 44px minmax(0, 1fr);
     gap: 6px;
+  }
+  .webhook-item-row .webhook-url-wrap {
+    order: 2;
+  }
+  .webhook-item-row .webhook-item-actions {
+    order: 3;
+    width: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+  .delivery-pills-wrap {
+    max-width: 200px;
   }
 }

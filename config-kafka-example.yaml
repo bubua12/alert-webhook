@@ -8,6 +8,13 @@ client:
 #  - feishu
 
 notifiers:
+  # 各渠道（wechat / dingtalk / feishu）除单地址 webhook_url 外，也支持通过 webhooks: 列表配置多个地址
+  # 支持 { name, url, enabled } 对象（enabled 默认 true）或直接写 URL 字符串简写，完全向后兼容单地址 webhook_url：
+  #   webhooks:
+  #     - name: "Kafka 运维群"
+  #       url: "https://..."
+  #       enabled: true
+  #     - "https://..."
   wechat:
     webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
   dingtalk:

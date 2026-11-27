@@ -114,13 +114,18 @@ export function mountAlerts(root, ctx) {
     if (!Array.isArray(deliveries) || deliveries.length === 0) {
       return '<span class="text-muted text-xs">--</span>';
     }
-    return deliveries
+    const pillsHtml = deliveries
       .map((d) => {
         const cm = clientMeta(d.client);
         const cls = d.success ? 'pill-success' : 'pill-emergency';
-        return `<span class="pill ${cls}" title="${escapeHtml(d.error || `${d.duration_ms ?? 0}ms`)}">${escapeHtml(cm.short)} ${d.success ? '✓' : '✕'}</span>`;
+        const target = String(d.target || '').trim();
+        const label = target ? `${cm.short}·${target}` : cm.short;
+        const titleTarget = target ? `${cm.name} (${target})` : cm.name;
+        const title = `${titleTarget} · ${d.error || `${d.duration_ms ?? 0}ms`}`;
+        return `<span class="pill ${cls}" title="${escapeHtml(title)}">${escapeHtml(label)} ${d.success ? '✓' : '✕'}</span>`;
       })
-      .join(' ');
+      .join('');
+    return `<div class="delivery-pills-wrap">${pillsHtml}</div>`;
   }
 
   function renderTable() {
@@ -148,7 +153,7 @@ export function mountAlerts(root, ctx) {
               <td><span class="pill ${src.pillClass}">${escapeHtml(src.label)}</span></td>
               <td><span class="pill ${st.pillClass}">${escapeHtml(st.label)}</span></td>
               <td><span class="pill ${del.pillClass}">${escapeHtml(del.label)}</span></td>
-              <td style="white-space:nowrap;">${renderDeliveryPills(rec.deliveries)}</td>
+              <td>${renderDeliveryPills(rec.deliveries)}</td>
               <td style="text-align:right;white-space:nowrap;">
                 <button class="btn btn-ghost btn-xs" type="button" data-view-idx="${idx}">详情</button>
               </td>

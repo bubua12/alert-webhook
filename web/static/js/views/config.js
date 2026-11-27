@@ -28,18 +28,73 @@ function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
+function parseRowKey(raw) {
+  const str = String(raw || '');
+  const sep = str.lastIndexOf(':');
+  if (sep <= 0) return null;
+  const key = str.slice(0, sep);
+  const idx = Number(str.slice(sep + 1));
+  if (!Number.isInteger(idx) || idx < 0) return null;
+  return { key, idx };
+}
+
+function shiftIndexedState(stateMap, key, removeIdx) {
+  const prefix = `${key}:`;
+  const entries = [];
+  Object.keys(stateMap).forEach((k) => {
+    if (!k.startsWith(prefix)) return;
+    const idx = Number(k.slice(prefix.length));
+    const val = stateMap[k];
+    delete stateMap[k];
+    if (Number.isInteger(idx) && idx >= 0 && idx !== removeIdx) {
+      entries.push([idx > removeIdx ? idx - 1 : idx, val]);
+    }
+  });
+  entries.forEach(([newIdx, val]) => {
+    stateMap[`${prefix}${newIdx}`] = val;
+  });
+}
+
+function normalizeWebhookEntry(w) {
+  if (typeof w === 'string') {
+    return {
+      name: '',
+      url: w,
+      enabled: true,
+    };
+  }
+  return {
+    name: String(w?.name || ''),
+    url: String(w?.url || ''),
+    enabled: w?.enabled !== false,
+  };
+}
+
+function normalizeNotifier(rawNotifier) {
+  if (Array.isArray(rawNotifier?.webhooks) && rawNotifier.webhooks.length > 0) {
+    return {
+      webhooks: rawNotifier.webhooks.map(normalizeWebhookEntry),
+    };
+  }
+  const legacyUrl = String(rawNotifier?.webhook_url || '').trim();
+  if (legacyUrl) {
+    return {
+      webhooks: [{ name: '', url: legacyUrl, enabled: true }],
+    };
+  }
+  return { webhooks: [] };
+}
+
 function normalizeConfig(raw = {}) {
   const c = raw || {};
   const notifiers = c.notifiers && typeof c.notifiers === 'object' ? c.notifiers : {};
   const normNotifiers = {};
   ['wechat', 'dingtalk', 'feishu'].forEach((k) => {
-    normNotifiers[k] = {
-      webhook_url: String(notifiers[k]?.webhook_url || ''),
-    };
+    normNotifiers[k] = normalizeNotifier(notifiers[k]);
   });
   Object.keys(notifiers).forEach((k) => {
     if (!normNotifiers[k]) {
-      normNotifiers[k] = { webhook_url: String(notifiers[k]?.webhook_url || '') };
+      normNotifiers[k] = normalizeNotifier(notifiers[k]);
     }
   });
 
@@ -111,9 +166,6 @@ export function mountConfig(root, ctx) {
   let restartRequired = false;
 
   const revealSecrets = {
-    wechat: false,
-    dingtalk: false,
-    feishu: false,
     clickhouse_password: false,
     auth_token: false,
   };
@@ -240,36 +292,136 @@ export function mountConfig(root, ctx) {
     return blocks.join('');
   }
 
+  function renderWebhookTestBox(testRes) {
+    if (!testRes) return '';
+    if (testRes.loading) {
+      return '<div class="webhook-test-result text-muted text-xs mt-2"><span class="spinner"></span> 正在发送连通性测试...</div>';
+    }
+    if (testRes.result) {
+      const r = testRes.result;
+      const target = String(r.target || '').trim();
+      return `
+        <div class="delivery-card webhook-test-result mt-2">
+          <div class="delivery-card-top">
+            <span class="${r.success ? 'text-success' : 'text-danger'}" style="font-weight:600;font-size:12px;">
+              ${r.success ? '连通性测试成功' : '连通性测试失败'}
+            </span>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              ${target ? `<span class="pill pill-info">${escapeHtml(target)}</span>` : ''}
+              <span class="pill pill-neutral mono">${escapeHtml(r.duration_ms ?? 0)} ms${r.status_code ? ` · HTTP ${escapeHtml(r.status_code)}` : ''}</span>
+            </div>
+          </div>
+          ${r.error ? `<div class="text-danger text-xs mt-2 mono" style="word-break:break-word;">${escapeHtml(r.error)}</div>` : ''}
+          ${r.response ? `<pre class="code-block mt-2" style="max-height:84px;">${escapeHtml(r.response)}</pre>` : ''}
+        </div>
+      `;
+    }
+    if (testRes.error) {
+      return `<div class="webhook-test-result text-danger text-xs mt-2">${escapeHtml(testRes.error)}</div>`;
+    }
+    return '';
+  }
+
   function renderChannelsTab() {
     const channels = ['wechat', 'dingtalk', 'feishu'];
     const cardsHtml = channels
       .map((key) => {
         const meta = clientMeta(key);
         const enabled = draftConfig.client.includes(key);
-        const urlVal = draftConfig.notifiers[key]?.webhook_url || '';
-        const revealed = Boolean(revealSecrets[key]);
-        const testRes = notifierTestState[key];
+        const webhooks = Array.isArray(draftConfig.notifiers[key]?.webhooks)
+          ? draftConfig.notifiers[key].webhooks
+          : [];
+        const totalCount = webhooks.length;
+        const enabledCount = webhooks.filter((w) => w.enabled !== false).length;
+        const channelTest = notifierTestState[key];
+        const isBatchTesting = Boolean(channelTest?.loading);
 
-        let testBoxHtml = '';
-        if (testRes?.loading) {
-          testBoxHtml = '<div class="text-muted text-xs mt-2"><span class="spinner"></span> 正在发送连通性测试...</div>';
-        } else if (testRes?.result) {
-          const r = testRes.result;
-          testBoxHtml = `
-            <div class="delivery-card mt-3">
-              <div class="delivery-card-top">
-                <span class="${r.success ? 'text-success' : 'text-danger'}" style="font-weight:600;font-size:12px;">
-                  ${r.success ? '连通性测试成功' : '连通性测试失败'}
-                </span>
-                <span class="pill pill-neutral mono">${escapeHtml(r.duration_ms ?? 0)} ms${r.status_code ? ` · HTTP ${escapeHtml(r.status_code)}` : ''}</span>
-              </div>
-              ${r.error ? `<div class="text-danger text-xs mt-2 mono" style="word-break:break-word;">${escapeHtml(r.error)}</div>` : ''}
-              ${r.response ? `<pre class="code-block mt-2" style="max-height:84px;">${escapeHtml(r.response)}</pre>` : ''}
-            </div>
-          `;
-        } else if (testRes?.error) {
-          testBoxHtml = `<div class="text-danger text-xs mt-2">${escapeHtml(testRes.error)}</div>`;
+        let countPill = '<span class="pill pill-neutral">0 个目标</span>';
+        if (totalCount > 0) {
+          if (enabledCount === 0) {
+            countPill = `<span class="pill pill-warning">已启用 0/${totalCount}</span>`;
+          } else if (enabledCount < totalCount) {
+            countPill = `<span class="pill pill-info">已启用 ${enabledCount}/${totalCount}</span>`;
+          } else {
+            countPill = `<span class="pill pill-info">${totalCount} 个目标</span>`;
+          }
         }
+
+        const listBodyHtml =
+          totalCount === 0
+            ? `
+              <div class="webhook-empty">
+                <div class="text-sm text-muted">尚未配置 ${escapeHtml(meta.name)} Webhook 地址，点击右侧按钮添加目标群机器人。</div>
+                <button type="button" class="btn btn-secondary btn-sm" data-add-webhook="${escapeHtml(key)}">+ 添加第一个 Webhook</button>
+              </div>
+            `
+            : `
+              <div class="webhook-list">
+                ${webhooks
+                  .map((item, idx) => {
+                    const rowKey = `${key}:${idx}`;
+                    const itemEnabled = item.enabled !== false;
+                    const revealed = Boolean(revealSecrets[rowKey]);
+                    const rowTest = notifierTestState[rowKey];
+                    const rowBusy = Boolean(rowTest?.loading) || isBatchTesting;
+                    return `
+                      <div class="webhook-item${itemEnabled ? '' : ' is-disabled'}">
+                        <div class="webhook-item-row">
+                          <span class="webhook-idx mono">#${idx + 1}</span>
+                          <input
+                            class="form-control webhook-name-input"
+                            type="text"
+                            value="${escapeHtml(item.name || '')}"
+                            data-webhook-name="${escapeHtml(rowKey)}"
+                            placeholder="备注名（可选，如运维主群）"
+                            autocomplete="off"
+                            aria-label="${escapeHtml(meta.name)} 备注名 #${idx + 1}"
+                          >
+                          <div class="input-with-action webhook-url-wrap">
+                            <input
+                              id="notifier-url-${escapeHtml(key)}-${idx}"
+                              class="form-control mono"
+                              type="${revealed ? 'text' : 'password'}"
+                              value="${escapeHtml(item.url || '')}"
+                              data-webhook-url="${escapeHtml(rowKey)}"
+                              placeholder="${escapeHtml(meta.placeholder)}"
+                              autocomplete="off"
+                              aria-label="${escapeHtml(meta.name)} Webhook URL #${idx + 1}"
+                            >
+                            <button
+                              type="button"
+                              class="input-action-btn"
+                              data-toggle-reveal="${escapeHtml(rowKey)}"
+                              title="${revealed ? '隐藏地址' : '显示地址'}"
+                              aria-label="显示或隐藏 Webhook URL"
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                            </button>
+                          </div>
+                          <div class="webhook-item-actions">
+                            <label class="toggle-switch" title="${itemEnabled ? '停用此目标' : '启用此目标'}">
+                              <input type="checkbox" data-webhook-toggle="${escapeHtml(rowKey)}" ${itemEnabled ? 'checked' : ''} ${rowBusy ? 'disabled' : ''} aria-label="启用或停用目标 #${idx + 1}">
+                              <span class="toggle-track"></span>
+                            </label>
+                            <button type="button" class="btn btn-secondary btn-xs" data-test-webhook="${escapeHtml(rowKey)}" ${rowBusy ? 'disabled' : ''}>
+                              ${rowTest?.loading ? '测试中...' : '测试'}
+                            </button>
+                            <button type="button" class="btn btn-ghost btn-xs text-danger" data-remove-webhook="${escapeHtml(rowKey)}" ${rowBusy ? 'disabled' : ''} title="移除此 Webhook">
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                        ${renderWebhookTestBox(rowTest)}
+                      </div>
+                    `;
+                  })
+                  .join('')}
+              </div>
+            `;
+
+        const channelErrorHtml = channelTest?.error
+          ? `<div class="banner banner-danger mt-3"><div class="banner-desc">${escapeHtml(channelTest.error)}</div></div>`
+          : '';
 
         return `
           <div class="card channel-card">
@@ -277,44 +429,26 @@ export function mountConfig(root, ctx) {
               <div class="card-title">
                 <span>${escapeHtml(meta.name)}</span>
                 <span class="pill pill-neutral mono">${escapeHtml(key)}</span>
+                ${countPill}
               </div>
-              <label class="toggle-switch" title="启用或停用该通知渠道">
-                <input type="checkbox" data-client-toggle="${escapeHtml(key)}" ${enabled ? 'checked' : ''}>
-                <span class="toggle-track"></span>
-                <span class="text-xs text-muted">${enabled ? '已启用' : '未启用'}</span>
-              </label>
+              <div class="channel-header-actions">
+                <button type="button" class="btn btn-secondary btn-sm" data-add-webhook="${escapeHtml(key)}">+ 添加 Webhook</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-test-notifier="${escapeHtml(key)}" ${enabledCount === 0 || isBatchTesting ? 'disabled' : ''}>
+                  ${isBatchTesting ? '<span class="spinner"></span> 测试中...' : '测试全部'}
+                </button>
+                <label class="toggle-switch" title="启用或停用该通知渠道">
+                  <input type="checkbox" data-client-toggle="${escapeHtml(key)}" ${enabled ? 'checked' : ''}>
+                  <span class="toggle-track"></span>
+                  <span class="text-xs text-muted">${enabled ? '已启用' : '未启用'}</span>
+                </label>
+              </div>
             </div>
             <div class="card-body channel-card-body">
-              <div class="form-group">
-                <label class="form-label" for="notifier-url-${escapeHtml(key)}">
-                  <span>Webhook URL</span>
-                </label>
-                <div class="input-with-action">
-                  <input
-                    id="notifier-url-${escapeHtml(key)}"
-                    class="form-control mono"
-                    type="${revealed ? 'text' : 'password'}"
-                    value="${escapeHtml(urlVal)}"
-                    data-notifier-url="${escapeHtml(key)}"
-                    placeholder="${escapeHtml(meta.placeholder)}"
-                    autocomplete="off"
-                  >
-                  <button type="button" class="input-action-btn" data-toggle-reveal="${escapeHtml(key)}" title="${revealed ? '隐藏地址' : '显示地址'}" aria-label="显示或隐藏 Webhook URL">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                  </button>
-                </div>
-              </div>
-
+              ${listBodyHtml}
+              ${channelErrorHtml}
               <div class="text-xs text-muted mt-3" style="line-height:1.55;">
                 <strong>接入指引：</strong>${escapeHtml(meta.guide)}
               </div>
-
-              <div class="channel-card-actions">
-                <button type="button" class="btn btn-secondary btn-sm" data-test-notifier="${escapeHtml(key)}" ${testRes?.loading ? 'disabled' : ''}>
-                  测试连通性
-                </button>
-              </div>
-              ${testBoxHtml}
             </div>
           </div>
         `;
@@ -322,7 +456,7 @@ export function mountConfig(root, ctx) {
       .join('');
 
     return `
-      <div class="grid-3">${cardsHtml}</div>
+      <div class="channel-stack">${cardsHtml}</div>
     `;
   }
 
@@ -752,13 +886,14 @@ export function mountConfig(root, ctx) {
               </div>
 
               <div class="form-group">
-                <label class="form-label" for="sv-token">API 访问令牌 (server.auth_token)</label>
+                <label class="form-label" for="sv-token">API 访问密钥 (server.auth_token / API_KEY)</label>
                 <div class="input-with-action">
-                  <input id="sv-token" class="form-control mono" type="${revealed ? 'text' : 'password'}" value="${escapeHtml(sv.auth_token)}" data-path="server.auth_token" placeholder="留空表示不启用 /api/* 鉴权" autocomplete="off">
-                  <button type="button" class="input-action-btn" data-toggle-reveal="auth_token" aria-label="显示或隐藏令牌">
+                  <input id="sv-token" class="form-control mono" type="${revealed ? 'text' : 'password'}" value="${escapeHtml(sv.auth_token)}" data-path="server.auth_token" placeholder="留空表示不启用登录鉴权" autocomplete="off">
+                  <button type="button" class="input-action-btn" data-toggle-reveal="auth_token" aria-label="显示或隐藏密钥">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                   </button>
                 </div>
+                <div class="form-hint">对应 <code class="mono">.env</code> 中的 <code class="mono">API_KEY</code>（兼容 <code class="mono">ALERT_WEBHOOK_AUTH_TOKEN</code>）；非空时 Web 控制台将启用独立登录页面鉴权。</div>
               </div>
 
               <div class="grid-2">
@@ -932,6 +1067,7 @@ export function mountConfig(root, ctx) {
       draftYaml = rawYaml;
       saveError = '';
       saveIssues = [];
+      Object.keys(notifierTestState).forEach((k) => delete notifierTestState[k]);
       render();
       ctx.toast('已还原为当前生效配置', 'info', 2000);
     });
@@ -941,7 +1077,13 @@ export function mountConfig(root, ctx) {
     root.querySelector('#cfg-save-top')?.addEventListener('click', handleSaveConfig);
     root.querySelector('#cfg-save-bar-btn')?.addEventListener('click', handleSaveConfig);
 
-    // Notifier channel toggles & URLs
+    const syncDirtyControls = () => {
+      updateDirtyBar();
+      const topSave = root.querySelector('#cfg-save-top');
+      if (topSave) topSave.disabled = !isDirty();
+    };
+
+    // Notifier channel toggles & multi-webhook rows
     root.querySelectorAll('[data-client-toggle]').forEach((chk) => {
       chk.addEventListener('change', () => {
         const key = chk.dataset.clientToggle;
@@ -955,14 +1097,41 @@ export function mountConfig(root, ctx) {
       });
     });
 
-    root.querySelectorAll('[data-notifier-url]').forEach((inp) => {
+    root.querySelectorAll('[data-add-webhook]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.addWebhook;
+        if (!key) return;
+        if (!draftConfig.notifiers[key]) draftConfig.notifiers[key] = { webhooks: [] };
+        if (!Array.isArray(draftConfig.notifiers[key].webhooks)) {
+          draftConfig.notifiers[key].webhooks = [];
+        }
+        const nextIdx = draftConfig.notifiers[key].webhooks.length;
+        draftConfig.notifiers[key].webhooks.push({ name: '', url: '', enabled: true });
+        delete notifierTestState[key];
+        render();
+        setTimeout(() => {
+          root.querySelector(`[data-webhook-url="${key}:${nextIdx}"]`)?.focus();
+        }, 0);
+      });
+    });
+
+    root.querySelectorAll('[data-webhook-name]').forEach((inp) => {
       inp.addEventListener('input', () => {
-        const key = inp.dataset.notifierUrl;
-        if (!draftConfig.notifiers[key]) draftConfig.notifiers[key] = { webhook_url: '' };
-        draftConfig.notifiers[key].webhook_url = inp.value.trim();
-        updateDirtyBar();
-        const topSave = root.querySelector('#cfg-save-top');
-        if (topSave) topSave.disabled = !isDirty();
+        const parsed = parseRowKey(inp.dataset.webhookName);
+        const item = parsed && draftConfig.notifiers[parsed.key]?.webhooks?.[parsed.idx];
+        if (!item) return;
+        item.name = inp.value;
+        syncDirtyControls();
+      });
+    });
+
+    root.querySelectorAll('[data-webhook-url]').forEach((inp) => {
+      inp.addEventListener('input', () => {
+        const parsed = parseRowKey(inp.dataset.webhookUrl);
+        const item = parsed && draftConfig.notifiers[parsed.key]?.webhooks?.[parsed.idx];
+        if (!item) return;
+        item.url = inp.value.trim();
+        syncDirtyControls();
       });
     });
 
@@ -974,18 +1143,157 @@ export function mountConfig(root, ctx) {
       });
     });
 
+    root.querySelectorAll('[data-webhook-toggle]').forEach((chk) => {
+      chk.addEventListener('change', () => {
+        const parsed = parseRowKey(chk.dataset.webhookToggle);
+        const item = parsed && draftConfig.notifiers[parsed.key]?.webhooks?.[parsed.idx];
+        if (!item) return;
+        item.enabled = Boolean(chk.checked);
+        delete notifierTestState[parsed.key];
+        render();
+      });
+    });
+
+    root.querySelectorAll('[data-remove-webhook]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const parsed = parseRowKey(btn.dataset.removeWebhook);
+        const list = parsed && draftConfig.notifiers[parsed.key]?.webhooks;
+        if (!Array.isArray(list) || parsed.idx >= list.length) return;
+        list.splice(parsed.idx, 1);
+        shiftIndexedState(revealSecrets, parsed.key, parsed.idx);
+        shiftIndexedState(notifierTestState, parsed.key, parsed.idx);
+        delete notifierTestState[parsed.key];
+        render();
+      });
+    });
+
+    root.querySelectorAll('[data-test-webhook]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const parsed = parseRowKey(btn.dataset.testWebhook);
+        if (!parsed) return;
+        const { key, idx } = parsed;
+        const webhooks = draftConfig.notifiers[key]?.webhooks || [];
+        const item = webhooks[idx];
+        if (!item) return;
+        const rowKey = `${key}:${idx}`;
+        const url = String(item.url || '').trim();
+        if (!url) {
+          notifierTestState[rowKey] = { loading: false, error: '请先填写 Webhook URL' };
+          render();
+          return;
+        }
+        const target = String(item.name || '').trim() || (webhooks.length > 1 ? `#${idx + 1}` : '');
+        notifierTestState[rowKey] = { loading: true };
+        render();
+        try {
+          const res = await api.testNotifier({
+            client: key,
+            webhook_url: item.url,
+            target,
+          });
+          const first = Array.isArray(res?.results) && res.results[0];
+          notifierTestState[rowKey] = {
+            loading: false,
+            result: first || { client: key, target, success: Boolean(res?.ok), duration_ms: 0 },
+          };
+        } catch (err) {
+          notifierTestState[rowKey] = { loading: false, error: err.message };
+        }
+        if (!destroyed) render();
+      });
+    });
+
     root.querySelectorAll('[data-test-notifier]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const key = btn.dataset.testNotifier;
-        const url = draftConfig.notifiers[key]?.webhook_url || '';
+        const meta = clientMeta(key);
+        const webhooks = Array.isArray(draftConfig.notifiers[key]?.webhooks)
+          ? draftConfig.notifiers[key].webhooks
+          : [];
+        const enabledEntries = webhooks
+          .map((item, idx) => ({ item, idx }))
+          .filter(({ item }) => item.enabled !== false);
+
+        if (enabledEntries.length === 0) {
+          ctx.toast(`${meta.name} 没有已启用的 Webhook 目标`, 'warning');
+          return;
+        }
+
         notifierTestState[key] = { loading: true };
+        enabledEntries.forEach(({ idx }) => {
+          notifierTestState[`${key}:${idx}`] = { loading: true };
+        });
         render();
+
         try {
-          const res = await api.testNotifier({ client: key, webhook_url: url });
-          const first = Array.isArray(res.results) && res.results[0];
-          notifierTestState[key] = { loading: false, result: first || { client: key, success: res.ok, duration_ms: 0 } };
+          const payloadWebhooks = webhooks.map((w) => ({
+            name: String(w?.name || '').trim(),
+            url: String(w?.url || '').trim(),
+            enabled: w?.enabled !== false,
+          }));
+          const res = await api.testNotifier({ client: key, webhooks: payloadWebhooks });
+          const results = Array.isArray(res?.results) ? res.results : [];
+
+          notifierTestState[key] = { loading: false };
+          enabledEntries.forEach(({ idx }) => {
+            delete notifierTestState[`${key}:${idx}`];
+          });
+
+          if (results.length === 0) {
+            const msg = '未返回测试结果，请确认已启用目标填写了有效的 Webhook URL';
+            notifierTestState[key] = { loading: false, error: msg };
+            ctx.toast(`${meta.name}：${msg}`, 'warning');
+          } else {
+            if (results.length === enabledEntries.length) {
+              results.forEach((r, i) => {
+                const targetIdx = enabledEntries[i].idx;
+                notifierTestState[`${key}:${targetIdx}`] = { loading: false, result: r };
+              });
+            } else {
+              const unmatched = enabledEntries.slice();
+              results.forEach((r) => {
+                const rTarget = String(r.target || '').trim();
+                let matchPos = -1;
+                if (rTarget) {
+                  matchPos = unmatched.findIndex((entry) => {
+                    const entryName = String(entry.item.name || '').trim();
+                    return (
+                      entryName === rTarget ||
+                      (`#${entry.idx + 1}` === rTarget && Boolean(String(entry.item.url || '').trim()))
+                    );
+                  });
+                }
+                if (matchPos === -1) {
+                  matchPos = unmatched.findIndex((entry) => Boolean(String(entry.item.url || '').trim()));
+                }
+                if (matchPos === -1) {
+                  matchPos = unmatched.length > 0 ? 0 : -1;
+                }
+                if (matchPos !== -1) {
+                  const [matched] = unmatched.splice(matchPos, 1);
+                  notifierTestState[`${key}:${matched.idx}`] = { loading: false, result: r };
+                }
+              });
+            }
+
+            const okCount = results.filter((r) => r.success).length;
+            if (okCount === results.length) {
+              ctx.toast(`${meta.name} 全部 ${okCount} 个目标连通性测试成功`, 'success');
+            } else if (okCount > 0) {
+              ctx.toast(`${meta.name} 测试完成：${okCount}/${results.length} 个目标成功`, 'warning');
+            } else {
+              ctx.toast(`${meta.name} 全部 ${results.length} 个目标测试失败`, 'error');
+            }
+          }
         } catch (err) {
+          enabledEntries.forEach(({ idx }) => {
+            const rowKey = `${key}:${idx}`;
+            if (notifierTestState[rowKey]?.loading) {
+              delete notifierTestState[rowKey];
+            }
+          });
           notifierTestState[key] = { loading: false, error: err.message };
+          ctx.toast(`${meta.name} 测试失败: ${err.message}`, 'error');
         }
         if (!destroyed) render();
       });
@@ -1278,6 +1586,19 @@ export function mountConfig(root, ctx) {
     const norm = normalizeConfig(res.config || {});
     savedConfig = deepClone(norm);
     draftConfig = deepClone(norm);
+    Object.keys(norm.notifiers).forEach((k) => {
+      const len = norm.notifiers[k]?.webhooks?.length || 0;
+      const prefix = `${k}:`;
+      [notifierTestState, revealSecrets].forEach((mapObj) => {
+        Object.keys(mapObj).forEach((rk) => {
+          if (!rk.startsWith(prefix)) return;
+          const idx = Number(rk.slice(prefix.length));
+          if (!Number.isInteger(idx) || idx < 0 || idx >= len) {
+            delete mapObj[rk];
+          }
+        });
+      });
+    });
     if (res.config_path) configPath = res.config_path;
     if (typeof res.yaml === 'string') {
       rawYaml = res.yaml;
@@ -1329,6 +1650,7 @@ export function mountConfig(root, ctx) {
     saveIssues = [];
     try {
       const res = await api.reloadConfig();
+      Object.keys(notifierTestState).forEach((k) => delete notifierTestState[k]);
       applyServerResponse(res);
       ctx.toast('已从磁盘重载配置文件并热生效', 'success');
       api.getOverview().then((ov) => ctx.onOverviewUpdated?.(ov)).catch(() => {});

@@ -5,12 +5,14 @@ import (
 	"alert-webhook/store"
 	"alert-webhook/utils"
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -65,6 +67,74 @@ func (h *APIHandler) HandleReadyz(c *gin.Context) {
 		"status":          "ready",
 		"config_loaded":   cfg != nil,
 		"enabled_clients": clients,
+	})
+}
+
+// HandleAuthStatus serves GET /api/auth/status (publicly reachable to render login state).
+func (h *APIHandler) HandleAuthStatus(c *gin.Context) {
+	expected := ""
+	if h.cfgMgr != nil {
+		expected = h.cfgMgr.Get().Server.AuthToken
+	}
+	if expected == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"auth_required": false,
+			"authenticated": true,
+		})
+		return
+	}
+
+	provided := extractAPIKey(c)
+	authenticated := subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+	c.JSON(http.StatusOK, gin.H{
+		"auth_required": true,
+		"authenticated": authenticated,
+	})
+}
+
+// HandleAuthLogin serves POST /api/auth/login to verify the API Key / token before entering the UI.
+func (h *APIHandler) HandleAuthLogin(c *gin.Context) {
+	var req struct {
+		APIKey string `json:"api_key"`
+		Token  string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": "请求参数格式错误: " + err.Error(),
+		})
+		return
+	}
+
+	expected := ""
+	if h.cfgMgr != nil {
+		expected = h.cfgMgr.Get().Server.AuthToken
+	}
+	if expected == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":            true,
+			"auth_required": false,
+			"authenticated": true,
+		})
+		return
+	}
+
+	provided := strings.TrimSpace(req.APIKey)
+	if provided == "" {
+		provided = strings.TrimSpace(req.Token)
+	}
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"ok":    false,
+			"error": "API Key 无效，请检查后重试",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":            true,
+		"auth_required": true,
+		"authenticated": true,
 	})
 }
 
@@ -235,8 +305,10 @@ func (h *APIHandler) writeConfigError(c *gin.Context, err error) {
 // HandleTestNotifier serves POST /api/test/notifier.
 func (h *APIHandler) HandleTestNotifier(c *gin.Context) {
 	var req struct {
-		Client     string `json:"client"`
-		WebhookURL string `json:"webhook_url"`
+		Client     string                 `json:"client"`
+		WebhookURL string                 `json:"webhook_url"`
+		Target     string                 `json:"target"`
+		Webhooks   []config.WebhookTarget `json:"webhooks"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数格式错误: " + err.Error()})
@@ -250,21 +322,38 @@ func (h *APIHandler) HandleTestNotifier(c *gin.Context) {
 	}
 
 	if clientName == "all" {
-		if len(cfg.Clients) == 0 {
+		uniqueClients := deduplicateClients(cfg.Clients)
+		if len(uniqueClients) == 0 {
 			c.JSON(http.StatusOK, gin.H{
 				"ok":      false,
 				"results": []store.DeliveryResult{},
 			})
 			return
 		}
-		results := make([]store.DeliveryResult, 0, len(cfg.Clients))
+
+		perClient := make([][]store.DeliveryResult, len(uniqueClients))
+		var wg sync.WaitGroup
+		for i, ch := range uniqueClients {
+			wg.Add(1)
+			go func(idx int, client string) {
+				defer wg.Done()
+				perClient[idx] = TestNotifierTargets(client, cfg.Notifiers[client].EnabledTargets())
+			}(i, ch)
+		}
+		wg.Wait()
+
+		results := make([]store.DeliveryResult, 0, len(uniqueClients))
 		allOK := true
-		for _, ch := range cfg.Clients {
-			res := TestNotifierClient(ch, cfg.Notifiers[ch].WebhookURL)
-			if !res.Success {
-				allOK = false
+		for _, group := range perClient {
+			for _, res := range group {
+				if !res.Success {
+					allOK = false
+				}
+				results = append(results, res)
 			}
-			results = append(results, res)
+		}
+		if len(results) == 0 {
+			allOK = false
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"ok":      allOK,
@@ -278,14 +367,27 @@ func (h *APIHandler) HandleTestNotifier(c *gin.Context) {
 		return
 	}
 
-	targetURL := strings.TrimSpace(req.WebhookURL)
-	if targetURL == "" {
-		targetURL = cfg.Notifiers[clientName].WebhookURL
+	var results []store.DeliveryResult
+	if strings.TrimSpace(req.WebhookURL) != "" {
+		results = []store.DeliveryResult{
+			TestNotifierClientWithTarget(clientName, strings.TrimSpace(req.Target), req.WebhookURL),
+		}
+	} else if len(req.Webhooks) > 0 {
+		results = TestNotifierTargets(clientName, req.Webhooks)
+	} else {
+		results = TestNotifierTargets(clientName, cfg.Notifiers[clientName].EnabledTargets())
 	}
-	res := TestNotifierClient(clientName, targetURL)
+
+	allOK := len(results) > 0
+	for _, res := range results {
+		if !res.Success {
+			allOK = false
+			break
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"ok":      res.Success,
-		"results": []store.DeliveryResult{res},
+		"ok":      allOK,
+		"results": results,
 	})
 }
 
@@ -502,7 +604,7 @@ func (h *APIHandler) HandleSimulate(c *gin.Context) {
 			Error:   "未选择或启用任何通知渠道",
 		}}
 	} else {
-		deliveries = SendToClients(data, targetClients, cfg.NotifierURLMap())
+		deliveries = SendToClientTargets(data, targetClients, cfg.NotifierTargetsMap())
 	}
 
 	deliveryState := ComputeDeliveryState(deliveries)

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -84,9 +86,192 @@ type SeverityFilter struct {
 	Exclude []string `yaml:"exclude" json:"exclude"`
 }
 
+// WebhookTarget 单个 Webhook 推送目标配置
+type WebhookTarget struct {
+	Name    string `yaml:"name,omitempty" json:"name,omitempty"`
+	URL     string `yaml:"url" json:"url"`
+	Enabled *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
+// IsEnabled returns whether the webhook target is enabled (defaults to true when Enabled is nil).
+func (t WebhookTarget) IsEnabled() bool {
+	return t.Enabled == nil || *t.Enabled
+}
+
+// Clone returns an isolated deep copy of WebhookTarget.
+func (t WebhookTarget) Clone() WebhookTarget {
+	cloned := t
+	if t.Enabled != nil {
+		cloned.Enabled = boolPtr(*t.Enabled)
+	}
+	return cloned
+}
+
+// UnmarshalYAML supports both legacy string shorthand and object form for WebhookTarget.
+func (t *WebhookTarget) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	if t == nil {
+		return nil
+	}
+	var s string
+	if err := unmarshal(&s); err == nil {
+		*t = WebhookTarget{URL: strings.TrimSpace(s)}
+		return nil
+	}
+
+	type plainWebhookTarget WebhookTarget
+	var plain plainWebhookTarget
+	if err := unmarshal(&plain); err != nil {
+		return err
+	}
+	plain.Name = strings.TrimSpace(plain.Name)
+	plain.URL = strings.TrimSpace(plain.URL)
+	*t = WebhookTarget(plain)
+	return nil
+}
+
+// UnmarshalJSON supports both string shorthand and object form for WebhookTarget.
+func (t *WebhookTarget) UnmarshalJSON(data []byte) error {
+	if t == nil {
+		return nil
+	}
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*t = WebhookTarget{}
+		return nil
+	}
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*t = WebhookTarget{URL: strings.TrimSpace(s)}
+		return nil
+	}
+
+	type plainWebhookTarget WebhookTarget
+	var plain plainWebhookTarget
+	if err := json.Unmarshal(trimmed, &plain); err != nil {
+		return err
+	}
+	plain.Name = strings.TrimSpace(plain.Name)
+	plain.URL = strings.TrimSpace(plain.URL)
+	*t = WebhookTarget(plain)
+	return nil
+}
+
+// FormatWebhookTargetLabel returns a display label for a webhook target (trimmed Name, or "#N" when total > 1).
+func FormatWebhookTargetLabel(target WebhookTarget, index, total int) string {
+	if name := strings.TrimSpace(target.Name); name != "" {
+		return name
+	}
+	if total > 1 {
+		return fmt.Sprintf("#%d", index+1)
+	}
+	return ""
+}
+
 // NotifierConfig 通知渠道配置
 type NotifierConfig struct {
-	WebhookURL string `yaml:"webhook_url" json:"webhook_url"`
+	WebhookURL string          `yaml:"webhook_url,omitempty" json:"webhook_url,omitempty"`
+	Webhooks   []WebhookTarget `yaml:"webhooks,omitempty" json:"webhooks,omitempty"`
+}
+
+// AllTargets normalizes and returns all webhook targets (merging legacy webhook_url if not already present).
+func (n NotifierConfig) AllTargets() []WebhookTarget {
+	trimmedLegacy := strings.TrimSpace(n.WebhookURL)
+	if len(n.Webhooks) > 0 {
+		targets := make([]WebhookTarget, 0, len(n.Webhooks)+1)
+		hasLegacy := false
+		for _, item := range n.Webhooks {
+			cloned := item.Clone()
+			cloned.Name = strings.TrimSpace(cloned.Name)
+			cloned.URL = strings.TrimSpace(cloned.URL)
+			if trimmedLegacy != "" && cloned.URL == trimmedLegacy {
+				hasLegacy = true
+			}
+			targets = append(targets, cloned)
+		}
+		if trimmedLegacy != "" && !hasLegacy {
+			targets = append([]WebhookTarget{{URL: trimmedLegacy}}, targets...)
+		}
+		return targets
+	}
+	if trimmedLegacy != "" {
+		return []WebhookTarget{{URL: trimmedLegacy}}
+	}
+	return []WebhookTarget{}
+}
+
+// EnabledTargets returns all enabled webhook targets in order.
+func (n NotifierConfig) EnabledTargets() []WebhookTarget {
+	all := n.AllTargets()
+	out := make([]WebhookTarget, 0, len(all))
+	for _, t := range all {
+		if t.IsEnabled() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// ConfiguredTargets returns all enabled webhook targets that have valid non-placeholder HTTP(S) URLs.
+func (n NotifierConfig) ConfiguredTargets() []WebhookTarget {
+	enabled := n.EnabledTargets()
+	out := make([]WebhookTarget, 0, len(enabled))
+	for _, t := range enabled {
+		if IsConfiguredWebhookURL(t.URL) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// HasConfiguredWebhook reports whether at least one enabled target has a valid configured URL.
+func (n NotifierConfig) HasConfiguredWebhook() bool {
+	return len(n.ConfiguredTargets()) > 0
+}
+
+// PrimaryURL returns the primary webhook URL for backward compatibility with single-URL consumers.
+func (n NotifierConfig) PrimaryURL() string {
+	if configured := n.ConfiguredTargets(); len(configured) > 0 {
+		return configured[0].URL
+	}
+	if enabled := n.EnabledTargets(); len(enabled) > 0 {
+		return enabled[0].URL
+	}
+	return strings.TrimSpace(n.WebhookURL)
+}
+
+// Clone returns an isolated deep copy of NotifierConfig.
+func (n NotifierConfig) Clone() NotifierConfig {
+	cloned := NotifierConfig{
+		WebhookURL: n.WebhookURL,
+	}
+	if n.Webhooks != nil {
+		cloned.Webhooks = make([]WebhookTarget, len(n.Webhooks))
+		for i, t := range n.Webhooks {
+			cloned.Webhooks[i] = t.Clone()
+		}
+	}
+	return cloned
+}
+
+// MarshalYAML emits legacy single webhook_url when possible, otherwise emits webhooks list without redundant webhook_url.
+func (n NotifierConfig) MarshalYAML() (interface{}, error) {
+	targets := n.AllTargets()
+	if len(targets) == 0 {
+		return struct {
+			WebhookURL string `yaml:"webhook_url"`
+		}{WebhookURL: ""}, nil
+	}
+	if len(targets) == 1 && strings.TrimSpace(targets[0].Name) == "" && targets[0].IsEnabled() {
+		return struct {
+			WebhookURL string `yaml:"webhook_url"`
+		}{WebhookURL: targets[0].URL}, nil
+	}
+	return struct {
+		Webhooks []WebhookTarget `yaml:"webhooks"`
+	}{Webhooks: targets}, nil
 }
 
 // ServerConfig HTTP服务器与控制台配置
@@ -158,9 +343,9 @@ func DefaultAppConfig() *AppConfig {
 	return &AppConfig{
 		Clients: []string{},
 		Notifiers: map[string]NotifierConfig{
-			"wechat":   {WebhookURL: ""},
-			"dingtalk": {WebhookURL: ""},
-			"feishu":   {WebhookURL: ""},
+			"wechat":   {Webhooks: []WebhookTarget{}},
+			"dingtalk": {Webhooks: []WebhookTarget{}},
+			"feishu":   {Webhooks: []WebhookTarget{}},
 		},
 		Server: ServerConfig{
 			Port:      "0.0.0.0:18082",
@@ -218,8 +403,17 @@ func (c *AppConfig) ApplyDefaults() {
 	}
 	for _, name := range SupportedClients {
 		if _, ok := c.Notifiers[name]; !ok {
-			c.Notifiers[name] = NotifierConfig{}
+			c.Notifiers[name] = NotifierConfig{Webhooks: []WebhookTarget{}}
 		}
+	}
+	for k, n := range c.Notifiers {
+		targets := n.AllTargets()
+		if targets == nil {
+			targets = []WebhookTarget{}
+		}
+		n.Webhooks = targets
+		n.WebhookURL = n.PrimaryURL()
+		c.Notifiers[k] = n
 	}
 	if strings.TrimSpace(c.Server.Port) == "" {
 		c.Server.Port = "0.0.0.0:18082"
@@ -269,7 +463,7 @@ func (c *AppConfig) Clone() *AppConfig {
 
 	copyCfg.Notifiers = make(map[string]NotifierConfig, len(c.Notifiers))
 	for k, v := range c.Notifiers {
-		copyCfg.Notifiers[k] = v
+		copyCfg.Notifiers[k] = v.Clone()
 	}
 
 	if c.Server.UIEnabled != nil {
@@ -345,21 +539,33 @@ func (c *AppConfig) HasConfiguredClient() bool {
 		return false
 	}
 	for _, client := range c.Clients {
-		if n, ok := c.Notifiers[client]; ok && IsConfiguredWebhookURL(n.WebhookURL) {
+		if n, ok := c.Notifiers[client]; ok && n.HasConfiguredWebhook() {
 			return true
 		}
 	}
 	return false
 }
 
-// NotifierURLMap returns a flat copy of client -> webhook_url.
+// NotifierURLMap returns a flat copy of client -> primary webhook_url.
 func (c *AppConfig) NotifierURLMap() map[string]string {
 	m := make(map[string]string)
 	if c == nil {
 		return m
 	}
 	for k, v := range c.Notifiers {
-		m[k] = v.WebhookURL
+		m[k] = v.PrimaryURL()
+	}
+	return m
+}
+
+// NotifierTargetsMap returns a deep-copied map of client -> all normalized WebhookTargets.
+func (c *AppConfig) NotifierTargetsMap() map[string][]WebhookTarget {
+	m := make(map[string][]WebhookTarget)
+	if c == nil {
+		return m
+	}
+	for k, v := range c.Notifiers {
+		m[k] = v.AllTargets()
 	}
 	return m
 }
@@ -406,34 +612,48 @@ func ValidateConfig(cfg *AppConfig) []ValidationIssue {
 		seenClients[client] = true
 
 		n := cfg.Notifiers[client]
-		if !IsConfiguredWebhookURL(n.WebhookURL) {
-			trimmed := strings.TrimSpace(n.WebhookURL)
-			if trimmed != "" && !strings.Contains(strings.ToLower(trimmed), "xxxxxx") {
-				if err := validateHTTPURL(trimmed); err != nil {
+		targets := n.AllTargets()
+		seenURLs := make(map[string]bool, len(targets))
+		for i, t := range targets {
+			field := fmt.Sprintf("notifiers.%s.webhooks[%d].url", client, i)
+			trimmed := strings.TrimSpace(t.URL)
+			if trimmed != "" {
+				if seenURLs[trimmed] {
 					issues = append(issues, ValidationIssue{
-						Field:   fmt.Sprintf("notifiers.%s.webhook_url", client),
-						Level:   "error",
-						Message: fmt.Sprintf("%s Webhook URL 格式无效: %v", client, err),
+						Field:   field,
+						Level:   "warning",
+						Message: fmt.Sprintf("%s 存在重复的 Webhook URL", client),
 					})
-					continue
 				}
+				seenURLs[trimmed] = true
 			}
+
+			if issue := validateTargetFormat(client, i, t.URL); issue != nil {
+				issues = append(issues, *issue)
+			} else if t.IsEnabled() && !IsConfiguredWebhookURL(t.URL) {
+				issues = append(issues, ValidationIssue{
+					Field:   field,
+					Level:   "warning",
+					Message: fmt.Sprintf("已启用 %s 的 Webhook 目标 #%d 尚未配置或仍为占位符", client, i+1),
+				})
+			}
+		}
+		if len(n.ConfiguredTargets()) == 0 {
 			issues = append(issues, ValidationIssue{
-				Field:   fmt.Sprintf("notifiers.%s.webhook_url", client),
+				Field:   fmt.Sprintf("notifiers.%s.webhooks", client),
 				Level:   "warning",
-				Message: fmt.Sprintf("已启用 %s 但 Webhook URL 尚未配置或仍为占位符", client),
+				Message: fmt.Sprintf("已启用 %s 但没有已启用且有效的 Webhook URL", client),
 			})
 		}
 	}
 
 	for name, n := range cfg.Notifiers {
-		if trimmed := strings.TrimSpace(n.WebhookURL); trimmed != "" && !strings.Contains(strings.ToLower(trimmed), "xxxxxx") {
-			if err := validateHTTPURL(trimmed); err != nil && !seenClients[name] {
-				issues = append(issues, ValidationIssue{
-					Field:   fmt.Sprintf("notifiers.%s.webhook_url", name),
-					Level:   "error",
-					Message: fmt.Sprintf("%s Webhook URL 格式无效: %v", name, err),
-				})
+		if seenClients[name] {
+			continue
+		}
+		for i, t := range n.AllTargets() {
+			if issue := validateTargetFormat(name, i, t.URL); issue != nil {
+				issues = append(issues, *issue)
 			}
 		}
 	}
@@ -498,6 +718,21 @@ func validateListenAddr(addr string) error {
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("端口号无效: %s", portStr)
+	}
+	return nil
+}
+
+func validateTargetFormat(client string, idx int, rawURL string) *ValidationIssue {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" || strings.Contains(strings.ToLower(trimmed), "xxxxxx") {
+		return nil
+	}
+	if err := validateHTTPURL(trimmed); err != nil {
+		return &ValidationIssue{
+			Field:   fmt.Sprintf("notifiers.%s.webhooks[%d].url", client, idx),
+			Level:   "error",
+			Message: fmt.Sprintf("%s Webhook URL 格式无效: %v", client, err),
+		}
 	}
 	return nil
 }

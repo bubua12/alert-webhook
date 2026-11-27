@@ -1,7 +1,6 @@
 const TOKEN_KEY = 'aw_api_token';
 
-let authPromptHandler = null;
-let pendingAuthPromise = null;
+let unauthorizedHandler = null;
 const authListeners = new Set();
 
 export function getStoredToken() {
@@ -51,22 +50,8 @@ function notifyTokenChange() {
   });
 }
 
-export function setAuthPromptHandler(fn) {
-  authPromptHandler = fn;
-}
-
-async function waitForAuthPrompt(reason) {
-  if (!authPromptHandler) {
-    return false;
-  }
-  if (!pendingAuthPromise) {
-    pendingAuthPromise = Promise.resolve()
-      .then(() => authPromptHandler(reason))
-      .finally(() => {
-        pendingAuthPromise = null;
-      });
-  }
-  return pendingAuthPromise;
+export function setUnauthorizedHandler(fn) {
+  unauthorizedHandler = fn;
 }
 
 export async function request(url, options = {}) {
@@ -75,6 +60,7 @@ export async function request(url, options = {}) {
   const token = getStoredToken();
 
   if (token) {
+    reqHeaders['X-API-Key'] = token;
     reqHeaders['X-API-Token'] = token;
     reqHeaders['Authorization'] = `Bearer ${token}`;
   }
@@ -92,14 +78,15 @@ export async function request(url, options = {}) {
     credentials: 'same-origin',
   });
 
-  if (res.status === 401 && url.startsWith('/api/') && !skipAuthRetry) {
-    const unlocked = await waitForAuthPrompt(token ? '令牌无效或已过期，请重新输入访问令牌。' : '当前接口受 API 令牌保护，请输入令牌以解锁操作。');
-    if (unlocked) {
-      return request(url, options);
+  if (res.status === 401 && url.startsWith('/api/') && !url.startsWith('/api/auth/') && !skipAuthRetry) {
+    const hadToken = Boolean(token);
+    clearStoredToken();
+    if (unauthorizedHandler) {
+      unauthorizedHandler(hadToken ? 'API Key 已失效或已变更，请重新登录。' : '当前控制台受 API Key 保护，请登录后继续。');
     }
-    const authErr = new Error('需要有效 API 访问令牌才能继续');
+    const authErr = new Error('需要有效 API Key 才能访问控制台');
     authErr.status = 401;
-    authErr.authCancelled = true;
+    authErr.authRequired = true;
     throw authErr;
   }
 
@@ -139,6 +126,8 @@ function buildQuery(params = {}) {
 export const api = {
   healthz: () => request('/healthz'),
   readyz: () => request('/readyz'),
+  authStatus: () => request('/api/auth/status', { skipAuthRetry: true }),
+  login: (apiKey) => request('/api/auth/login', { method: 'POST', body: { api_key: apiKey }, skipAuthRetry: true }),
   getOverview: () => request('/api/overview'),
   getAlerts: (params = {}) => request(`/api/alerts${buildQuery(params)}`),
   clearAlerts: () => request('/api/alerts', { method: 'DELETE' }),

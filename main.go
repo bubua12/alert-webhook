@@ -18,6 +18,8 @@ import (
 )
 
 func main() {
+	loadedEnv, envErr := config.LoadDotEnv("")
+
 	defaultConfigPath := strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_CONFIG"))
 	if defaultConfigPath == "" {
 		defaultConfigPath = "./config.yaml"
@@ -29,6 +31,12 @@ func main() {
 	// Configure initial stdout + memory log buffer before loading config so startup logs are captured.
 	log.SetOutput(io.MultiWriter(os.Stdout, logBuffer))
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	if envErr != nil {
+		log.Printf("[Warn] 加载环境变量文件失败: %v", envErr)
+	} else if loadedEnv != "" {
+		log.Printf("已加载环境变量文件: %s", loadedEnv)
+	}
 
 	cfgMgr, err := config.NewConfigManager(*configPath)
 	if err != nil {

@@ -23,16 +23,43 @@ client: []
   # - feishu
 
 # 各通知渠道 Webhook 配置
+# 说明：
+# 1. 每个内置渠道（wechat / dingtalk / feishu）均支持通过 webhooks 列表配置多个接收地址，触发告警时将并发推送至所有已启用目标。
+# 2. webhooks 列表项同时支持以下两种写法（可混用）：
+#    - 对象格式：{ name: "备注名（可选）", url: "https://...", enabled: true }（enabled 省略时默认 true）
+#    - 简写格式：直接填写 URL 字符串（等价于 enabled: true）
+# 3. 如需使用下方示例，请先删除对应渠道 webhooks 后的 [] 再取消注释。
+# 4. 100% 向后兼容旧版单地址字段 webhook_url: "https://..."；若同时配置 webhook_url 与 webhooks，两者会自动合并去重。
 notifiers:
   wechat:
-    # 示例: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx
-    webhook_url: ""
+    webhooks: []
+      # 写法一：对象格式（推荐，可配置备注名称与独立启停；enabled 默认为 true）
+      # - name: "运维主群"
+      #   url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
+      #   enabled: true
+      # - name: "值班备用群"
+      #   url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=yyyyyyyyyyyyyyyyyyyyyy"
+      #   enabled: false
+      # 写法二：字符串简写格式（默认 enabled: true）
+      # - "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=zzzzzzzzzzzzzzzzzzzzzz"
+    # 兼容旧版单地址写法（与 webhooks 二选一即可，完全向后兼容）：
+    # webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxx"
   dingtalk:
-    # 示例: https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx
-    webhook_url: ""
+    webhooks: []
+      # - name: "SRE 告警群"
+      #   url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
+      #   enabled: true
+      # - "https://oapi.dingtalk.com/robot/send?access_token=yyyyyyyyyyyyyyyyyyyyyyyyy"
+    # 兼容旧版单地址写法：
+    # webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxxxxxxxxxxxxxxxxxxx"
   feishu:
-    # 示例: https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    webhook_url: ""
+    webhooks: []
+      # - name: "核心业务群"
+      #   url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      #   enabled: true
+      # - "https://open.feishu.cn/open-apis/bot/v2/hook/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+    # 兼容旧版单地址写法：
+    # webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 # ClickHouse 数据库配置（启用大流量告警功能时需要）
 clickhouse:

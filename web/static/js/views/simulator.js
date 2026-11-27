@@ -115,12 +115,29 @@ function renderChatPreviewHtml(rawText) {
     .join('');
 }
 
+function isConfiguredWebhookUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (lower.includes('xxxxxx')) return false;
+  if (lower.endsWith('key=') || lower.endsWith('access_token=') || lower.endsWith('/hook/')) {
+    return false;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.host);
+  } catch {
+    return false;
+  }
+}
+
 export function mountSimulator(root, ctx) {
   let destroyed = false;
   let activePreviewTab = 'wechat';
   let previewMode = 'rendered'; // 'rendered' | 'raw'
   let result = null;
   let running = false;
+  const channelTargetCounts = {};
 
   const form = {
     status: 'firing',
@@ -192,11 +209,15 @@ export function mountSimulator(root, ctx) {
       ? deliveries
           .map((d) => {
             const cm = clientMeta(d.client);
+            const target = String(d.target || '').trim();
             return `
               <div class="delivery-card">
                 <div class="delivery-card-top">
-                  <strong>${escapeHtml(cm.name)}</strong>
-                  <div style="display:flex;align-items:center;gap:6px;">
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <strong>${escapeHtml(cm.name)}</strong>
+                    ${target ? `<span class="pill pill-info">${escapeHtml(target)}</span>` : ''}
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                     ${d.status_code ? `<span class="pill pill-neutral mono">HTTP ${escapeHtml(d.status_code)}</span>` : ''}
                     ${d.batches ? `<span class="pill pill-info mono">${escapeHtml(d.batches)} 批</span>` : ''}
                     <span class="pill pill-neutral mono">${escapeHtml(d.duration_ms ?? 0)} ms</span>
@@ -285,10 +306,12 @@ export function mountSimulator(root, ctx) {
       .map((c) => {
         const meta = clientMeta(c);
         const checked = form.clients.includes(c);
+        const count = Number(channelTargetCounts[c]) || 0;
+        const labelText = count > 1 ? `${meta.name} (${count})` : meta.name;
         return `
           <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:6px 10px;border:1px solid var(--border-color);border-radius:var(--radius-sm);background:var(--bg-subtle);">
             <input type="checkbox" value="${escapeHtml(c)}" data-sim-client="${escapeHtml(c)}" ${checked ? 'checked' : ''}>
-            <span class="text-sm">${escapeHtml(meta.name)}</span>
+            <span class="text-sm">${escapeHtml(labelText)}</span>
           </label>
         `;
       })
@@ -529,14 +552,38 @@ export function mountSimulator(root, ctx) {
     }
   }
 
-  // Pre-sync enabled clients if available
+  // Pre-sync enabled clients & per-channel target counts if available
   api
     .getConfig()
     .then((res) => {
       if (destroyed) return;
-      const enabled = res?.config?.client;
+      const cfg = res?.config || {};
+      const notifiers = cfg.notifiers && typeof cfg.notifiers === 'object' ? cfg.notifiers : {};
+      let changed = false;
+
+      ['wechat', 'dingtalk', 'feishu'].forEach((ch) => {
+        const entry = notifiers[ch];
+        let count = 0;
+        if (Array.isArray(entry?.webhooks) && entry.webhooks.length > 0) {
+          count = entry.webhooks.filter((w) => {
+            if (typeof w === 'string') return isConfiguredWebhookUrl(w);
+            return w?.enabled !== false && isConfiguredWebhookUrl(w?.url);
+          }).length;
+        } else if (isConfiguredWebhookUrl(entry?.webhook_url)) {
+          count = 1;
+        }
+        if (channelTargetCounts[ch] !== count) {
+          channelTargetCounts[ch] = count;
+          changed = true;
+        }
+      });
+
+      const enabled = cfg.client;
       if (Array.isArray(enabled) && enabled.length > 0) {
         form.clients = enabled.slice();
+        changed = true;
+      }
+      if (changed) {
         render();
       }
     })
