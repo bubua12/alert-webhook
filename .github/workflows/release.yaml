@@ -1,0 +1,120 @@
+name: Release alert-webhook
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 必须拿到 annotated tag 对象；只 checkout 到 commit 时无法提取附注正文
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run vet and race tests
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Build release packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          build_unix_pkg() {
+            local goos="$1"
+            local goarch="$2"
+            local pkg="alert-webhook-${VERSION}-${goos}-${goarch}"
+            local dir="dist/${pkg}"
+            mkdir -p "${dir}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w" -o "${dir}/alert-webhook" .
+            cp scripts/start.sh "${dir}/start.sh"
+            cp scripts/stop.sh "${dir}/stop.sh"
+            cp config-example.yaml "${dir}/config-example.yaml"
+            cp config-kafka-example.yaml "${dir}/config-kafka-example.yaml"
+            cp .env.example "${dir}/.env.example"
+            chmod +x "${dir}/alert-webhook" "${dir}/start.sh" "${dir}/stop.sh"
+            tar -czf "dist/${pkg}.tar.gz" -C dist "${pkg}"
+          }
+
+          build_unix_pkg linux amd64
+          build_unix_pkg linux arm64
+          build_unix_pkg darwin arm64
+          build_unix_pkg darwin amd64
+
+          win_pkg="alert-webhook-${VERSION}-windows-amd64"
+          win_dir="dist/${win_pkg}"
+          mkdir -p "${win_dir}"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "${win_dir}/alert-webhook.exe" .
+          cp config-example.yaml "${win_dir}/config-example.yaml"
+          cp config-kafka-example.yaml "${win_dir}/config-kafka-example.yaml"
+          cp .env.example "${win_dir}/.env.example"
+          (cd dist && zip -rq "${win_pkg}.zip" "${win_pkg}")
+
+      - name: Extract release notes from annotated tag
+        id: release_notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          if [ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]; then
+            echo "::error::${TAG} is not an annotated tag; refusing to use commit message as Release body"
+            exit 1
+          fi
+          TAG_MSG=$(git cat-file -p "refs/tags/${TAG}" | sed -n '/^$/,$p' | tail -n +2)
+          if [ -z "$(printf '%s' "$TAG_MSG" | tr -d '[:space:]')" ]; then
+            echo "::error::annotated tag ${TAG} has empty message"
+            exit 1
+          fi
+          # 正式版对比上一个正式版（兼容旧版无 v 前缀 Tag 如 1.1.0 与新版 v* Tag）
+          PREV=$(git tag -l --sort=-v:refname | awk -v cur="$TAG" '
+            $0 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+/ { next }
+            $0 == cur { next }
+            cur !~ /-/ && $0 ~ /-/ { next }
+            { print; exit }
+          ')
+          if [ -n "${PREV}" ] && ! printf '%s' "$TAG_MSG" | grep -q 'Full Changelog'; then
+            TAG_MSG=$(printf '%s\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$TAG_MSG" "${GITHUB_REPOSITORY}" "$PREV" "$TAG")
+          fi
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            printf '%s\n' "$TAG_MSG"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.body }}
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          generate_release_notes: false
+          files: |
+            dist/alert-webhook-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+            dist/alert-webhook-${{ steps.version.outputs.version }}-linux-arm64.tar.gz
+            dist/alert-webhook-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz
+            dist/alert-webhook-${{ steps.version.outputs.version }}-darwin-amd64.tar.gz
+            dist/alert-webhook-${{ steps.version.outputs.version }}-windows-amd64.zip
